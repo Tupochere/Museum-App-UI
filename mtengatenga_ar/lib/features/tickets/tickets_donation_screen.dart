@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
-import '../../theme/app_tokens.dart';
+import '../../core/models/ui_models.dart';
+import 'ticket_checkout_screen.dart';
 
 class TicketsDonationScreen extends StatefulWidget {
   const TicketsDonationScreen({super.key});
@@ -40,7 +41,6 @@ class _TicketsDonationScreenState extends State<TicketsDonationScreen> {
     const bg = Color(0xFFFDFCF0); // soft-cream :contentReference[oaicite:2]{index=2}
     const border = Color(0x33D2B48C); // earth-border/30 :contentReference[oaicite:3]{index=3}
     const primary = Color(0xFFD2691E); // terracotta :contentReference[oaicite:4]{index=4}
-    const clay = Color(0xFFB25642);
     const dark = Color(0xFF3C2A21);
 
     return Scaffold(
@@ -88,7 +88,7 @@ class _TicketsDonationScreenState extends State<TicketsDonationScreen> {
                             ],
                           ),
                           child: Text(
-                            'Date: Today',
+                            'Date: ${DateTime.now().day}/${DateTime.now().month}/${DateTime.now().year}',
                             style: TextStyle(
                               fontSize: 12,
                               fontWeight: FontWeight.w800,
@@ -385,8 +385,17 @@ class _TicketsDonationScreenState extends State<TicketsDonationScreen> {
                         height: 54,
                         child: ElevatedButton(
                           onPressed: () {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(content: Text('Buy Now (UI only)')),
+                            final draft = UiTicketOrderDraft(
+                              adult: adult,
+                              student: student,
+                              international: international,
+                              donationLabel: donationLabel,
+                              totalLabel: 'MWK ${ticketTotalMWK.toString()}',
+                            );
+                            Navigator.of(context).push(
+                              MaterialPageRoute(
+                                builder: (_) => TicketCheckoutScreen(draft: draft),
+                              ),
                             );
                           },
                           style: ElevatedButton.styleFrom(

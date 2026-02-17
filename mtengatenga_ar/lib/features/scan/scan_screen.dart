@@ -1,12 +1,12 @@
 import 'dart:async';
-
 import 'package:flutter/material.dart';
+import '../../core/models/ui_models.dart';
+import '../../core/ui/states/state_view.dart';
 import '../../theme/app_tokens.dart';
 import '../artifact/artifact_details_screen.dart';
+import '../artifact/artifact_not_found_screen.dart';
 import 'scan_help_screen.dart';
 import 'scan_history_screen.dart';
-
-enum ScanUiState { searching, found, error }
 
 class ScanScreen extends StatefulWidget {
   const ScanScreen({super.key});
@@ -15,16 +15,11 @@ class ScanScreen extends StatefulWidget {
   State<ScanScreen> createState() => _ScanScreenState();
 }
 
-class _ScanScreenState extends State<ScanScreen>
-    with SingleTickerProviderStateMixin {
+class _ScanScreenState extends State<ScanScreen> with SingleTickerProviderStateMixin {
   late final AnimationController _scanController;
   Timer? _simulateFoundTimer;
-  Timer? _autoOpenTimer;
-  bool _didNavigateToDetails = false;
   bool _flashOn = false;
-
-  // UI only: toggle states for demo
-  ScanUiState _state = ScanUiState.searching;
+  ScanViewState _state = ScanViewState.searching;
 
   static const _bgUrl =
       'https://lh3.googleusercontent.com/aida-public/AB6AXuA-QdLXYVLcupowILko324Kow061FlJG19lwvli15SKT4z1k_2QOKiyYqmkAZBBu5ZXvkIxasMZdDQnOjnRW3AkuAw35MTJbv8KBEBBEBAAmRK84WHyNj_QgMJRyXB87UE2S_8sj9Frzrt01OcoKGDgQr-NxLe-xX-XpY-9adoOk44nx6-YZqIKb9QPBHTmtprFexVhdIVTN9L40p5Y_XJ9keomSVFMBLk2U-X2LF35RPVmX9FP4LhL6zDV6Ln1WJDW9tBZyh7J2TsX';
@@ -32,17 +27,13 @@ class _ScanScreenState extends State<ScanScreen>
   @override
   void initState() {
     super.initState();
-    _scanController = AnimationController(
-      vsync: this,
-      duration: const Duration(seconds: 3),
-    )..repeat();
-    _restartScanSimulation(fromInit: true);
+    _scanController = AnimationController(vsync: this, duration: const Duration(seconds: 3))..repeat();
+    _restartScanSimulation();
   }
 
   @override
   void dispose() {
     _simulateFoundTimer?.cancel();
-    _autoOpenTimer?.cancel();
     _scanController.dispose();
     super.dispose();
   }
@@ -50,6 +41,7 @@ class _ScanScreenState extends State<ScanScreen>
   @override
   Widget build(BuildContext context) {
     final h = MediaQuery.of(context).size.height;
+    final permissionState = _state == ScanViewState.permissionDenied;
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -63,8 +55,7 @@ class _ScanScreenState extends State<ScanScreen>
               colorBlendMode: BlendMode.darken,
             ),
           ),
-          Positioned.fill(child: Container(color: Colors.black.withOpacity(0.06))),
-
+          Positioned.fill(child: Container(color: Colors.black.withOpacity(0.10))),
           SafeArea(
             child: Column(
               children: [
@@ -72,46 +63,64 @@ class _ScanScreenState extends State<ScanScreen>
                   flashOn: _flashOn,
                   onBack: () => Navigator.pop(context),
                   onFlash: () => setState(() => _flashOn = !_flashOn),
-                  // UI-only “state switcher” (remove later)
-                  onLongPressTitle: () {
-                    setState(() {
-                      _state = ScanUiState.values[
-                          (_state.index + 1) % ScanUiState.values.length];
-                    });
-                  },
+                  onLongPressTitle: _cycleUiStates,
                 ),
-
                 Expanded(
                   child: Stack(
                     alignment: Alignment.center,
                     children: [
-                      _ScanFrame(controller: _scanController),
-
-                      // Middle status (depends on state)
-                      Positioned(
-                        bottom: h * 0.15,
-                        child: AnimatedSwitcher(
-                          duration: const Duration(milliseconds: 220),
-                          switchInCurve: Curves.easeOut,
-                          switchOutCurve: Curves.easeIn,
-                          child: _buildStatusPill(),
-                        ),
+                      Opacity(
+                        opacity: permissionState ? 0.30 : 1,
+                        child: _ScanFrame(controller: _scanController),
                       ),
-
-                      // Found overlay card
-                      if (_state == ScanUiState.found)
+                      if (_state == ScanViewState.permissionDenied)
+                        Positioned(
+                          left: AppSpacing.lg,
+                          right: AppSpacing.lg,
+                          child: PermissionPromptCard(
+                            title: 'Camera Access Needed',
+                            message: 'Allow camera access so the app can recognize artifacts and AR triggers.',
+                            actionLabel: 'Enable Camera',
+                            onAction: () => setState(() => _state = ScanViewState.searching),
+                          ),
+                        ),
+                      if (_state == ScanViewState.found)
                         Positioned(
                           left: AppSpacing.lg,
                           right: AppSpacing.lg,
                           bottom: h * 0.24,
                           child: _FoundCard(
-                            onView: _openArtifactDetails,
+                            onView: () {
+                              Navigator.of(context).push(
+                                MaterialPageRoute(builder: (_) => const ArtifactDetailsScreen()),
+                              );
+                            },
                           ),
                         ),
+                      if (_state == ScanViewState.noMatch)
+                        Positioned(
+                          left: AppSpacing.lg,
+                          right: AppSpacing.lg,
+                          bottom: h * 0.24,
+                          child: _NoMatchCard(
+                            onRetry: _restartScanSimulation,
+                            onOpenFallback: () {
+                              Navigator.of(context).push(
+                                MaterialPageRoute(builder: (_) => const ArtifactNotFoundScreen()),
+                              );
+                            },
+                          ),
+                        ),
+                      Positioned(
+                        bottom: h * 0.15,
+                        child: AnimatedSwitcher(
+                          duration: const Duration(milliseconds: 220),
+                          child: _buildStatusPill(),
+                        ),
+                      ),
                     ],
                   ),
                 ),
-
                 _BottomBar(
                   onHistory: () {
                     Navigator.of(context).push(
@@ -134,48 +143,36 @@ class _ScanScreenState extends State<ScanScreen>
 
   Widget _buildStatusPill() {
     switch (_state) {
-      case ScanUiState.searching:
+      case ScanViewState.searching:
         return const _SearchingPill(key: ValueKey('searching'));
-      case ScanUiState.found:
-        return const _SuccessPill(key: ValueKey('found'));
-      case ScanUiState.error:
-        return _ErrorPill(
-          key: const ValueKey('error'),
+      case ScanViewState.found:
+        return const _StatusPill(icon: Icons.check_circle, label: 'ARTIFACT FOUND', color: Color(0xFF2E7D32));
+      case ScanViewState.error:
+        return _RetryPill(
+          label: 'SCAN FAILED',
           onRetry: _restartScanSimulation,
         );
+      case ScanViewState.permissionDenied:
+        return const _StatusPill(icon: Icons.block, label: 'CAMERA OFF', color: Color(0xFFC62828));
+      case ScanViewState.lowLight:
+        return const _StatusPill(icon: Icons.wb_incandescent_outlined, label: 'LOW LIGHT', color: Color(0xFFE2725B));
+      case ScanViewState.noMatch:
+        return _RetryPill(label: 'NO MATCH', onRetry: _restartScanSimulation);
     }
   }
 
-  void _restartScanSimulation({bool fromInit = false}) {
+  void _restartScanSimulation() {
     _simulateFoundTimer?.cancel();
-    _autoOpenTimer?.cancel();
-    _didNavigateToDetails = false;
-    if (fromInit) {
-      _state = ScanUiState.searching;
-    } else {
-      setState(() => _state = ScanUiState.searching);
-    }
-
+    setState(() => _state = ScanViewState.searching);
     _simulateFoundTimer = Timer(const Duration(seconds: 2), () {
       if (!mounted) return;
-      setState(() => _state = ScanUiState.found);
-
-      _autoOpenTimer = Timer(const Duration(seconds: 1), () {
-        _openArtifactDetails();
-      });
+      setState(() => _state = ScanViewState.found);
     });
   }
 
-  void _openArtifactDetails() {
-    if (!mounted || _didNavigateToDetails) return;
-    _didNavigateToDetails = true;
-    Navigator.of(context)
-        .push(
-      MaterialPageRoute(builder: (_) => const ArtifactDetailsScreen()),
-    )
-        .then((_) {
-      if (!mounted) return;
-      _restartScanSimulation();
+  void _cycleUiStates() {
+    setState(() {
+      _state = ScanViewState.values[(_state.index + 1) % ScanViewState.values.length];
     });
   }
 }
@@ -191,8 +188,6 @@ class _TopArea extends StatelessWidget {
   final bool flashOn;
   final VoidCallback onBack;
   final VoidCallback onFlash;
-
-  // UI-only debug gesture (remove later)
   final VoidCallback onLongPressTitle;
 
   @override
@@ -200,32 +195,38 @@ class _TopArea extends StatelessWidget {
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.fromLTRB(AppSpacing.md, AppSpacing.sm, AppSpacing.md, 18),
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [
-            Colors.black.withOpacity(0.35),
-            Colors.transparent,
-          ],
-        ),
-      ),
       child: Column(
         children: [
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               _CircleIconButton(icon: Icons.arrow_back, onTap: onBack),
-              _CircleIconButton(
-                icon: flashOn ? Icons.flash_on : Icons.flash_off,
-                onTap: onFlash,
-              ),
+              _CircleIconButton(icon: flashOn ? Icons.flash_on : Icons.flash_off, onTap: onFlash),
             ],
           ),
           const SizedBox(height: 18),
           GestureDetector(
-            onLongPress: onLongPressTitle, // UI-only
-            child: const _InstructionCard(),
+            onLongPress: onLongPressTitle,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 14),
+              decoration: BoxDecoration(
+                color: const Color(0xD9FDFBF7),
+                borderRadius: BorderRadius.circular(18),
+              ),
+              child: const Column(
+                children: [
+                  Text(
+                    'Point camera at artifact',
+                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900, color: AppColors.textMain),
+                  ),
+                  SizedBox(height: 6),
+                  Text(
+                    'Align the object within the frame',
+                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.textMuted),
+                  ),
+                ],
+              ),
+            ),
           ),
         ],
       ),
@@ -235,32 +236,54 @@ class _TopArea extends StatelessWidget {
 
 class _BottomBar extends StatelessWidget {
   const _BottomBar({required this.onHistory, required this.onHelp});
-
   final VoidCallback onHistory;
   final VoidCallback onHelp;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.fromLTRB(AppSpacing.lg, 18, AppSpacing.lg, AppSpacing.lg),
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.bottomCenter,
-          end: Alignment.topCenter,
-          colors: [
-            Colors.black.withOpacity(0.28),
-            Colors.black.withOpacity(0.10),
-            Colors.transparent,
-          ],
-        ),
-      ),
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(AppSpacing.lg, 12, AppSpacing.lg, AppSpacing.lg),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          _HistoryButton(onTap: onHistory),
-          _HelpButton(onTap: onHelp),
+          _ActionButton(label: 'History', icon: Icons.collections_outlined, onTap: onHistory),
+          _ActionButton(label: 'Help', icon: Icons.help_outline, onTap: onHelp),
         ],
+      ),
+    );
+  }
+}
+
+class _ActionButton extends StatelessWidget {
+  const _ActionButton({
+    required this.label,
+    required this.icon,
+    required this.onTap,
+  });
+
+  final String label;
+  final IconData icon;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(AppRadius.md),
+      child: Container(
+        height: 48,
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        decoration: BoxDecoration(
+          color: const Color(0xD9FDFBF7),
+          borderRadius: BorderRadius.circular(AppRadius.md),
+        ),
+        child: Row(
+          children: [
+            Icon(icon, color: AppColors.textMain),
+            const SizedBox(width: 8),
+            Text(label, style: const TextStyle(fontWeight: FontWeight.w800)),
+          ],
+        ),
       ),
     );
   }
@@ -268,7 +291,6 @@ class _BottomBar extends StatelessWidget {
 
 class _CircleIconButton extends StatelessWidget {
   const _CircleIconButton({required this.icon, required this.onTap});
-
   final IconData icon;
   final VoidCallback onTap;
 
@@ -280,58 +302,11 @@ class _CircleIconButton extends StatelessWidget {
       child: Container(
         width: 40,
         height: 40,
-        decoration: BoxDecoration(
-          color: const Color(0xD9FDFBF7),
+        decoration: const BoxDecoration(
+          color: Color(0xD9FDFBF7),
           shape: BoxShape.circle,
-          border: Border.all(color: Colors.white.withOpacity(0.40)),
-          boxShadow: const [
-            BoxShadow(blurRadius: 8, offset: Offset(0, 2), color: Color(0x14000000)),
-          ],
         ),
         child: Icon(icon, color: AppColors.textMain),
-      ),
-    );
-  }
-}
-
-class _InstructionCard extends StatelessWidget {
-  const _InstructionCard();
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 14),
-      decoration: BoxDecoration(
-        color: const Color(0xD9FDFBF7),
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: Colors.white.withOpacity(0.20)),
-        boxShadow: const [
-          BoxShadow(blurRadius: 16, offset: Offset(0, 6), color: Color(0x1A000000)),
-        ],
-      ),
-      child: Column(
-        children: [
-          const Text(
-            'Point camera at artifact',
-            style: TextStyle(
-              fontSize: 20,
-              fontWeight: FontWeight.w900,
-              color: AppColors.textMain,
-              letterSpacing: -0.2,
-            ),
-            textAlign: TextAlign.center,
-          ),
-          const SizedBox(height: 6),
-          Text(
-            'Align the object within the frame',
-            style: TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w700,
-              color: AppColors.textMain.withOpacity(0.72),
-            ),
-            textAlign: TextAlign.center,
-          ),
-        ],
       ),
     );
   }
@@ -343,120 +318,38 @@ class _ScanFrame extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, c) {
-        final size = (c.maxWidth >= 420) ? 320.0 : 256.0;
-
-        return SizedBox(
-          width: size,
-          height: size,
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(AppRadius.md),
-            child: Stack(
-              children: [
-                Container(
-                  decoration: BoxDecoration(
-                    color: const Color(0x0DFDFBF7),
-                    border: Border.all(color: const Color(0x4DD4A017), width: 1),
-                    borderRadius: BorderRadius.circular(AppRadius.md),
+    return SizedBox(
+      width: 256,
+      height: 256,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(AppRadius.md),
+        child: Stack(
+          children: [
+            Container(
+              decoration: BoxDecoration(
+                color: const Color(0x0DFDFBF7),
+                border: Border.all(color: const Color(0x4DD4A017), width: 1),
+                borderRadius: BorderRadius.circular(AppRadius.md),
+              ),
+            ),
+            AnimatedBuilder(
+              animation: controller,
+              builder: (_, __) {
+                final y = (262) * controller.value - 3;
+                return Positioned(
+                  left: 0,
+                  right: 0,
+                  top: y,
+                  child: Container(
+                    height: 3,
+                    color: const Color(0xFFD4A017),
                   ),
-                ),
-                AnimatedBuilder(
-                  animation: controller,
-                  builder: (_, __) {
-                    final y = (size + 6) * controller.value - 3;
-                    return Positioned(
-                      left: 0,
-                      right: 0,
-                      top: y,
-                      child: Container(
-                        height: 3,
-                        decoration: const BoxDecoration(
-                          color: Color(0xFFD4A017),
-                          boxShadow: [
-                            BoxShadow(blurRadius: 14, color: Color(0xCCD4A017)),
-                          ],
-                        ),
-                      ),
-                    );
-                  },
-                ),
-                const _CornerBrackets(),
-                Center(
-                  child: Opacity(
-                    opacity: 0.40,
-                    child: SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: Stack(
-                        children: [
-                          Align(
-                            alignment: Alignment.center,
-                            child: Container(height: 1, color: Color(0xFFFDFBF7)),
-                          ),
-                          Align(
-                            alignment: Alignment.center,
-                            child: Container(width: 1, color: Color(0xFFFDFBF7)),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-              ],
+                );
+              },
             ),
-          ),
-        );
-      },
-    );
-  }
-}
-
-class _CornerBrackets extends StatelessWidget {
-  const _CornerBrackets();
-
-  @override
-  Widget build(BuildContext context) {
-    const color = Color(0xFFD4A017);
-    const thickness = 3.0;
-    const corner = 24.0;
-    const radius = 10.0;
-
-    Widget cornerBox({
-      required Alignment align,
-      required bool top,
-      required bool left,
-    }) {
-      return Align(
-        alignment: align,
-        child: Container(
-          width: corner,
-          height: corner,
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.only(
-              topLeft: Radius.circular((top && left) ? radius : 0),
-              topRight: Radius.circular((top && !left) ? radius : 0),
-              bottomLeft: Radius.circular((!top && left) ? radius : 0),
-              bottomRight: Radius.circular((!top && !left) ? radius : 0),
-            ),
-            border: Border(
-              top: top ? const BorderSide(color: color, width: thickness) : BorderSide.none,
-              bottom: !top ? const BorderSide(color: color, width: thickness) : BorderSide.none,
-              left: left ? const BorderSide(color: color, width: thickness) : BorderSide.none,
-              right: !left ? const BorderSide(color: color, width: thickness) : BorderSide.none,
-            ),
-          ),
+          ],
         ),
-      );
-    }
-
-    return Stack(
-      children: [
-        cornerBox(align: Alignment.topLeft, top: true, left: true),
-        cornerBox(align: Alignment.topRight, top: true, left: false),
-        cornerBox(align: Alignment.bottomLeft, top: false, left: true),
-        cornerBox(align: Alignment.bottomRight, top: false, left: false),
-      ],
+      ),
     );
   }
 }
@@ -468,15 +361,13 @@ class _SearchingPill extends StatefulWidget {
   State<_SearchingPill> createState() => _SearchingPillState();
 }
 
-class _SearchingPillState extends State<_SearchingPill>
-    with SingleTickerProviderStateMixin {
+class _SearchingPillState extends State<_SearchingPill> with SingleTickerProviderStateMixin {
   late final AnimationController _pulse;
 
   @override
   void initState() {
     super.initState();
-    _pulse = AnimationController(vsync: this, duration: const Duration(seconds: 1))
-      ..repeat(reverse: true);
+    _pulse = AnimationController(vsync: this, duration: const Duration(seconds: 1))..repeat(reverse: true);
   }
 
   @override
@@ -494,61 +385,49 @@ class _SearchingPillState extends State<_SearchingPill>
           AnimatedBuilder(
             animation: _pulse,
             builder: (_, __) {
-              final opacity = 0.35 + (0.65 * _pulse.value);
-              return Container(
-                width: 8,
-                height: 8,
-                decoration: BoxDecoration(
-                  color: const Color(0xFFD4A017).withOpacity(opacity),
-                  shape: BoxShape.circle,
-                ),
+              return Opacity(
+                opacity: 0.30 + 0.70 * _pulse.value,
+                child: const Icon(Icons.circle, size: 10, color: Color(0xFFD4A017)),
               );
             },
           ),
           const SizedBox(width: 10),
-          const Text(
-            'SEARCHING...',
-            style: TextStyle(
-              fontSize: 12,
-              fontWeight: FontWeight.w900,
-              letterSpacing: 0.9,
-              color: AppColors.textMain,
-            ),
-          ),
+          const Text('SEARCHING...', style: TextStyle(fontWeight: FontWeight.w900, color: AppColors.textMain)),
         ],
       ),
     );
   }
 }
 
-class _SuccessPill extends StatelessWidget {
-  const _SuccessPill({super.key});
+class _StatusPill extends StatelessWidget {
+  const _StatusPill({
+    required this.icon,
+    required this.label,
+    required this.color,
+  });
+
+  final IconData icon;
+  final String label;
+  final Color color;
 
   @override
   Widget build(BuildContext context) {
     return _BasePill(
       child: Row(
         mainAxisSize: MainAxisSize.min,
-        children: const [
-          Icon(Icons.check_circle, size: 16, color: Color(0xFF2E7D32)),
-          SizedBox(width: 10),
-          Text(
-            'ARTIFACT FOUND',
-            style: TextStyle(
-              fontSize: 12,
-              fontWeight: FontWeight.w900,
-              letterSpacing: 0.9,
-              color: AppColors.textMain,
-            ),
-          ),
+        children: [
+          Icon(icon, size: 16, color: color),
+          const SizedBox(width: 10),
+          Text(label, style: const TextStyle(fontWeight: FontWeight.w900, color: AppColors.textMain)),
         ],
       ),
     );
   }
 }
 
-class _ErrorPill extends StatelessWidget {
-  const _ErrorPill({super.key, required this.onRetry});
+class _RetryPill extends StatelessWidget {
+  const _RetryPill({required this.label, required this.onRetry});
+  final String label;
   final VoidCallback onRetry;
 
   @override
@@ -557,31 +436,9 @@ class _ErrorPill extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const Icon(Icons.error, size: 16, color: Color(0xFFC62828)),
+          Text(label, style: const TextStyle(fontWeight: FontWeight.w900, color: AppColors.textMain)),
           const SizedBox(width: 10),
-          const Text(
-            'NO QR DETECTED',
-            style: TextStyle(
-              fontSize: 12,
-              fontWeight: FontWeight.w900,
-              letterSpacing: 0.9,
-              color: AppColors.textMain,
-            ),
-          ),
-          const SizedBox(width: 12),
-          TextButton(
-            onPressed: onRetry,
-            style: TextButton.styleFrom(
-              padding: EdgeInsets.zero,
-              minimumSize: const Size(0, 0),
-              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              foregroundColor: AppColors.primary,
-            ),
-            child: const Text(
-              'Retry',
-              style: TextStyle(fontWeight: FontWeight.w900),
-            ),
-          ),
+          TextButton(onPressed: onRetry, child: const Text('Retry')),
         ],
       ),
     );
@@ -599,10 +456,6 @@ class _BasePill extends StatelessWidget {
       decoration: BoxDecoration(
         color: const Color(0xD9FDFBF7),
         borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: Colors.white.withOpacity(0.20)),
-        boxShadow: const [
-          BoxShadow(blurRadius: 10, offset: Offset(0, 3), color: Color(0x1A000000)),
-        ],
       ),
       child: child,
     );
@@ -615,15 +468,83 @@ class _FoundCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    return _OverlayCard(
+      title: 'Ngoni Shield',
+      subtitle: 'Artifact detected and ready to open.',
+      actionLabel: 'View',
+      onAction: onView,
+    );
+  }
+}
+
+class _NoMatchCard extends StatelessWidget {
+  const _NoMatchCard({
+    required this.onRetry,
+    required this.onOpenFallback,
+  });
+
+  final VoidCallback onRetry;
+  final VoidCallback onOpenFallback;
+
+  @override
+  Widget build(BuildContext context) {
     return Container(
       padding: const EdgeInsets.all(AppSpacing.md),
       decoration: BoxDecoration(
         color: const Color(0xD9FDFBF7),
         borderRadius: BorderRadius.circular(AppRadius.lg),
-        border: Border.all(color: Colors.white.withOpacity(0.20)),
-        boxShadow: const [
-          BoxShadow(blurRadius: 18, offset: Offset(0, 8), color: Color(0x1F000000)),
+      ),
+      child: Column(
+        children: [
+          const Text(
+            'No matching artifact found',
+            style: TextStyle(fontSize: 14, fontWeight: FontWeight.w900, color: AppColors.textMain),
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: onRetry,
+                  child: const Text('Retry'),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: ElevatedButton(
+                  onPressed: onOpenFallback,
+                  style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary, foregroundColor: Colors.white),
+                  child: const Text('Need Help'),
+                ),
+              ),
+            ],
+          ),
         ],
+      ),
+    );
+  }
+}
+
+class _OverlayCard extends StatelessWidget {
+  const _OverlayCard({
+    required this.title,
+    required this.subtitle,
+    required this.actionLabel,
+    required this.onAction,
+  });
+
+  final String title;
+  final String subtitle;
+  final String actionLabel;
+  final VoidCallback onAction;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(AppSpacing.md),
+      decoration: BoxDecoration(
+        color: const Color(0xD9FDFBF7),
+        borderRadius: BorderRadius.circular(AppRadius.lg),
       ),
       child: Row(
         children: [
@@ -637,127 +558,22 @@ class _FoundCard extends StatelessWidget {
             child: const Icon(Icons.museum_outlined, color: AppColors.primary),
           ),
           const SizedBox(width: 12),
-          const Expanded(
+          Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  'Ngoni Shield',
-                  style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w900,
-                    color: AppColors.textMain,
-                  ),
-                ),
-                SizedBox(height: 4),
-                Text(
-                  'Tap to view artifact details',
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w700,
-                    color: AppColors.textMuted,
-                  ),
-                ),
+                Text(title, style: const TextStyle(fontWeight: FontWeight.w900, color: AppColors.textMain)),
+                const SizedBox(height: 4),
+                Text(subtitle, style: const TextStyle(fontSize: 12, color: AppColors.textMuted)),
               ],
             ),
           ),
-          const SizedBox(width: 10),
           ElevatedButton(
-            onPressed: onView,
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.primary,
-              foregroundColor: Colors.white,
-              elevation: 0,
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
-              ),
-            ),
-            child: const Text(
-              'View',
-              style: TextStyle(fontWeight: FontWeight.w900),
-            ),
+            onPressed: onAction,
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary, foregroundColor: Colors.white),
+            child: Text(actionLabel),
           ),
         ],
-      ),
-    );
-  }
-}
-
-class _HistoryButton extends StatelessWidget {
-  const _HistoryButton({required this.onTap});
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(AppRadius.md),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            width: 48,
-            height: 48,
-            decoration: BoxDecoration(
-              color: const Color(0xD9FDFBF7),
-              borderRadius: BorderRadius.circular(AppRadius.md),
-              border: Border.all(color: Colors.white.withOpacity(0.20)),
-              boxShadow: const [
-                BoxShadow(blurRadius: 10, offset: Offset(0, 3), color: Color(0x1A000000)),
-              ],
-            ),
-            child: const Icon(Icons.collections_outlined, color: AppColors.textMain),
-          ),
-          const SizedBox(height: 6),
-          const Text(
-            'History',
-            style: TextStyle(
-              fontSize: 12,
-              fontWeight: FontWeight.w700,
-              color: Color(0xFFFDFBF7),
-              shadows: [Shadow(blurRadius: 8, color: Color(0x66000000))],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _HelpButton extends StatelessWidget {
-  const _HelpButton({required this.onTap});
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(AppRadius.md),
-      child: Container(
-        height: 48,
-        padding: const EdgeInsets.symmetric(horizontal: 18),
-        decoration: BoxDecoration(
-          color: const Color(0xFFE2725B),
-          borderRadius: BorderRadius.circular(AppRadius.md),
-          border: Border.all(color: Colors.white.withOpacity(0.10)),
-          boxShadow: const [
-            BoxShadow(blurRadius: 16, offset: Offset(0, 6), color: Color(0x33E2725B)),
-          ],
-        ),
-        child: const Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.help_outline, color: Colors.white),
-            SizedBox(width: 10),
-            Text(
-              'Help',
-              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900, color: Colors.white),
-            ),
-          ],
-        ),
       ),
     );
   }

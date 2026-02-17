@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
+import 'core/ui/shell/app_shell.dart';
 import 'theme/app_theme.dart';
-import 'features/home/mtengatenga_home_screen.dart';
 
 void main() {
   runApp(const MtengatengaApp());
@@ -14,7 +14,7 @@ class MtengatengaApp extends StatelessWidget {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       theme: AppTheme.light(),
-      home: const MtengatengaHomeScreen(),
+      home: const AppShell(),
     );
   }
 }
