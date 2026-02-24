@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../theme/app_tokens.dart';
 import '../ai_guide/ai_guide_screen.dart';
+import 'debug_artifacts_screen.dart';
 import '../events/events_screen.dart';
 import '../map/indoor_navigation_screen.dart';
 import '../scan/scan_screen.dart';
@@ -99,6 +100,20 @@ class _MtengatengaHomeScreenState extends State<MtengatengaHomeScreen> {
                     },
                   ),
                 ],
+              ),
+              const SizedBox(height: 18),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: () {
+                    Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => const DebugArtifactsScreen(),
+                      ),
+                    );
+                  },
+                  child: const Text('Test Supabase Connection'),
+                ),
               ),
             ],
           ),
