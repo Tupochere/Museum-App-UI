@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../core/domain/entities/artifact.dart';
 import '../../core/models/ui_models.dart';
 import '../../core/ui/states/state_view.dart';
 import '../../theme/app_tokens.dart';
@@ -68,7 +69,11 @@ class _ScanHistoryScreenState extends State<ScanHistoryScreen> {
                       return InkWell(
                         onTap: () {
                           Navigator.of(context).push(
-                            MaterialPageRoute(builder: (_) => const ArtifactDetailsScreen()),
+                            MaterialPageRoute(
+                              builder: (_) => ArtifactDetailsScreen(
+                                artifact: _demoArtifact(item.artifactName, item.locationHint),
+                              ),
+                            ),
                           );
                         },
                         borderRadius: BorderRadius.circular(AppRadius.md),
@@ -124,6 +129,16 @@ class _ScanHistoryScreenState extends State<ScanHistoryScreen> {
           ),
         ],
       ),
+    );
+  }
+
+  Artifact _demoArtifact(String name, String? location) {
+    return Artifact(
+      id: 'scan-history-$name',
+      name: name,
+      subtitle: location,
+      description: 'Artifact details from scan history are not wired yet.',
+      updatedAt: DateTime.now(),
     );
   }
 }

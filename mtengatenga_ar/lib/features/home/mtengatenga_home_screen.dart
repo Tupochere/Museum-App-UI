@@ -1,4 +1,7 @@
 import 'package:flutter/material.dart';
+import '../../core/data/mappers/artifact_mapper.dart';
+import '../../core/models/ui_models.dart';
+import '../../core/services/service_locator.dart';
 import '../../theme/app_tokens.dart';
 import '../ai_guide/ai_guide_screen.dart';
 import '../events/events_screen.dart';
@@ -15,6 +18,32 @@ class MtengatengaHomeScreen extends StatefulWidget {
 
 class _MtengatengaHomeScreenState extends State<MtengatengaHomeScreen> {
   bool _isEnglish = true;
+  List<UiArtifactSummary> _featuredArtifacts = [];
+  bool _loadingArtifacts = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadFeaturedArtifacts();
+  }
+
+  Future<void> _loadFeaturedArtifacts() async {
+    try {
+      final repo = ServiceLocator().artifactRepository;
+      final artifacts = await repo.getFeaturedArtifacts();
+
+      if (!mounted) return;
+      setState(() {
+        _featuredArtifacts = ArtifactMapper.toUiSummaryList(artifacts);
+        _loadingArtifacts = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _loadingArtifacts = false;
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -100,6 +129,49 @@ class _MtengatengaHomeScreenState extends State<MtengatengaHomeScreen> {
                   ),
                 ],
               ),
+              const SizedBox(height: 28),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    'Featured Artifacts',
+                    style: AppText.cardTitle.copyWith(color: AppColors.textMain),
+                  ),
+                  TextButton(
+                    onPressed: () {
+                      // TODO: Navigate to full artifacts list
+                    },
+                    child: const Text('See All'),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              _loadingArtifacts
+                  ? const Center(
+                      child: Padding(
+                        padding: EdgeInsets.all(20),
+                        child: CircularProgressIndicator(),
+                      ),
+                    )
+                  : _featuredArtifacts.isEmpty
+                      ? const Center(
+                          child: Padding(
+                            padding: EdgeInsets.all(20),
+                            child: Text('No artifacts available'),
+                          ),
+                        )
+                      : SizedBox(
+                          height: 180,
+                          child: ListView.builder(
+                            scrollDirection: Axis.horizontal,
+                            itemCount: _featuredArtifacts.length,
+                            itemBuilder: (context, index) {
+                              return _FeaturedArtifactCard(
+                                artifact: _featuredArtifacts[index],
+                              );
+                            },
+                          ),
+                        ),
             ],
           ),
         ),
@@ -293,6 +365,100 @@ class _ActionTile extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _FeaturedArtifactCard extends StatelessWidget {
+  const _FeaturedArtifactCard({required this.artifact});
+
+  final UiArtifactSummary artifact;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 160,
+      child: Container(
+        margin: const EdgeInsets.only(right: AppSpacing.md),
+        child: InkWell(
+          onTap: () {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Tapped ${artifact.name}')),
+            );
+          },
+          borderRadius: BorderRadius.circular(AppRadius.md),
+          child: Container(
+            decoration: BoxDecoration(
+              color: AppColors.surfaceCard,
+              borderRadius: BorderRadius.circular(AppRadius.md),
+              border: Border.all(color: AppColors.surfaceBorder),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  height: 100,
+                  decoration: BoxDecoration(
+                    color: AppColors.secondary.withOpacity(0.1),
+                    borderRadius: const BorderRadius.vertical(
+                      top: Radius.circular(AppRadius.md),
+                    ),
+                  ),
+                  child: artifact.imageUrl.isNotEmpty
+                      ? ClipRRect(
+                          borderRadius: const BorderRadius.vertical(
+                            top: Radius.circular(AppRadius.md),
+                          ),
+                          child: Image.network(
+                            artifact.imageUrl,
+                            width: double.infinity,
+                            height: 100,
+                            fit: BoxFit.cover,
+                            errorBuilder: (_, __, ___) => const Center(
+                              child: Icon(Icons.image_not_supported),
+                            ),
+                          ),
+                        )
+                      : const Center(
+                          child: Icon(
+                            Icons.museum,
+                            size: 40,
+                            color: AppColors.secondary,
+                          ),
+                        ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.all(AppSpacing.sm),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        artifact.name,
+                        style: AppText.tileTitle.copyWith(
+                          color: AppColors.textMain,
+                          fontSize: 14,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        artifact.subtitle,
+                        style: AppText.tileSubtitle.copyWith(
+                          color: AppColors.textMuted,
+                          fontSize: 12,
+                        ),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
         ),
       ),
     );

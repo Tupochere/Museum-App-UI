@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import '../../core/domain/entities/artifact.dart';
 import '../../core/models/ui_models.dart';
+import '../../core/services/service_locator.dart';
 import '../../core/ui/states/state_view.dart';
 import '../../theme/app_tokens.dart';
 import '../artifact/artifact_details_screen.dart';
@@ -20,6 +22,8 @@ class _ScanScreenState extends State<ScanScreen> with SingleTickerProviderStateM
   Timer? _simulateFoundTimer;
   bool _flashOn = false;
   ScanViewState _state = ScanViewState.searching;
+  Artifact? _scannedArtifact;
+  String _simulatedQrCode = 'MASK001';
 
   static const _bgUrl =
       'https://lh3.googleusercontent.com/aida-public/AB6AXuA-QdLXYVLcupowILko324Kow061FlJG19lwvli15SKT4z1k_2QOKiyYqmkAZBBu5ZXvkIxasMZdDQnOjnRW3AkuAw35MTJbv8KBEBBEBAAmRK84WHyNj_QgMJRyXB87UE2S_8sj9Frzrt01OcoKGDgQr-NxLe-xX-XpY-9adoOk44nx6-YZqIKb9QPBHTmtprFexVhdIVTN9L40p5Y_XJ9keomSVFMBLk2U-X2LF35RPVmX9FP4LhL6zDV6Ln1WJDW9tBZyh7J2TsX';
@@ -84,15 +88,18 @@ class _ScanScreenState extends State<ScanScreen> with SingleTickerProviderStateM
                             onAction: () => setState(() => _state = ScanViewState.searching),
                           ),
                         ),
-                      if (_state == ScanViewState.found)
+                      if (_state == ScanViewState.found && _scannedArtifact != null)
                         Positioned(
                           left: AppSpacing.lg,
                           right: AppSpacing.lg,
                           bottom: h * 0.24,
                           child: _FoundCard(
+                            artifactName: _scannedArtifact!.name,
                             onView: () {
                               Navigator.of(context).push(
-                                MaterialPageRoute(builder: (_) => const ArtifactDetailsScreen()),
+                                MaterialPageRoute(
+                                  builder: (_) => ArtifactDetailsScreen(artifact: _scannedArtifact!),
+                                ),
                               );
                             },
                           ),
@@ -163,17 +170,48 @@ class _ScanScreenState extends State<ScanScreen> with SingleTickerProviderStateM
 
   void _restartScanSimulation() {
     _simulateFoundTimer?.cancel();
-    setState(() => _state = ScanViewState.searching);
-    _simulateFoundTimer = Timer(const Duration(seconds: 2), () {
+    setState(() {
+      _state = ScanViewState.searching;
+      _scannedArtifact = null;
+    });
+    _simulateFoundTimer = Timer(const Duration(seconds: 2), () async {
       if (!mounted) return;
-      setState(() => _state = ScanViewState.found);
+      await _handleQrCodeScanned(_simulatedQrCode);
     });
   }
 
+  Future<void> _handleQrCodeScanned(String qrCode) async {
+    try {
+      final repo = ServiceLocator().artifactRepository;
+      final artifact = await repo.getArtifactByQrCode(qrCode);
+
+      if (!mounted) return;
+
+      if (artifact != null) {
+        setState(() {
+          _scannedArtifact = artifact;
+          _state = ScanViewState.found;
+        });
+      } else {
+        setState(() {
+          _state = ScanViewState.noMatch;
+        });
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _state = ScanViewState.error;
+      });
+    }
+  }
+
   void _cycleUiStates() {
-    setState(() {
-      _state = ScanViewState.values[(_state.index + 1) % ScanViewState.values.length];
-    });
+    final qrCodes = ['MASK001', 'SHIELD001', 'POT001', 'DRUM001', 'INVALID_QR'];
+    final currentIndex = qrCodes.indexOf(_simulatedQrCode);
+    final nextIndex = (currentIndex + 1) % qrCodes.length;
+
+    _simulatedQrCode = qrCodes[nextIndex];
+    _restartScanSimulation();
   }
 }
 
@@ -463,13 +501,18 @@ class _BasePill extends StatelessWidget {
 }
 
 class _FoundCard extends StatelessWidget {
-  const _FoundCard({required this.onView});
+  const _FoundCard({
+    required this.artifactName,
+    required this.onView,
+  });
+
+  final String artifactName;
   final VoidCallback onView;
 
   @override
   Widget build(BuildContext context) {
     return _OverlayCard(
-      title: 'Ngoni Shield',
+      title: artifactName,
       subtitle: 'Artifact detected and ready to open.',
       actionLabel: 'View',
       onAction: onView,

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../core/domain/entities/artifact.dart';
 import '../../core/models/ui_models.dart';
 import '../../core/ui/states/state_view.dart';
 import '../../theme/app_tokens.dart';
@@ -22,6 +23,17 @@ class SavedArtifactsScreen extends StatelessWidget {
     ),
   ];
 
+  Artifact _demoArtifact(UiArtifactSummary item) {
+    return Artifact(
+      id: item.id,
+      name: item.name,
+      subtitle: item.subtitle,
+      period: item.period,
+      description: 'Saved artifact details are not wired yet.',
+      updatedAt: DateTime.now(),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -43,7 +55,9 @@ class SavedArtifactsScreen extends StatelessWidget {
                 return InkWell(
                   onTap: () {
                     Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => const ArtifactDetailsScreen()),
+                      MaterialPageRoute(
+                        builder: (_) => ArtifactDetailsScreen(artifact: _demoArtifact(item)),
+                      ),
                     );
                   },
                   borderRadius: BorderRadius.circular(AppRadius.md),

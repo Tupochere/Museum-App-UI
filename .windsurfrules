@@ -1,0 +1,44 @@
+﻿# Mtengatenga AR Museum App - Development Rules
+
+## Project Context
+This is a Flutter mobile app for Mtengatenga Cultural Museum in Malawi.
+Core features: AR artifact scanning, AI guide, indoor navigation, digital ticketing.
+
+## Architecture
+- **OOP/Clean Architecture**: Domain entities, repositories, services
+- **Offline-first**: Supabase + local SQLite caching
+- **State Management**: (add Riverpod/Bloc when we introduce it)
+
+## Coding Standards
+- Use Dart 3.0+ features
+- All classes must have clear single responsibilities
+- Repository pattern for all data access
+- Domain entities are immutable and isolated from UI
+- UI models are separate from domain entities (use mappers)
+
+## File Structure
+lib/
+  core/
+    domain/entities/     - Pure business objects
+    data/repositories/   - Data access interfaces + implementations
+    data/mappers/        - Domain ↔ UI model converters
+    services/            - Infrastructure (Supabase, locators)
+    models/              - UI presentation models
+  features/              - Feature modules (home, scan, artifact, etc.)
+  theme/                 - Design tokens
+
+## Current Phase
+Building core data layer with Supabase backend.
+Next: populate real artifact content and add offline caching.
+
+## Key Dependencies
+- supabase_flutter: Backend + auth
+- flutter_dotenv: Environment config
+- (future) brick_offline_first_with_supabase: Offline caching
+- (future) ar_flutter_plugin: AR scanning
+
+## Don't
+- Never hardcode Supabase credentials (use .env)
+- Don't mix UI and domain logic
+- Don't access Supabase directly from widgets (use repositories)
+- Don't commit .env files to git
