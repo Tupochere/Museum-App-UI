@@ -244,6 +244,12 @@ class _ScanScreenState extends State<ScanScreen> with SingleTickerProviderStateM
           _state = ScanViewState.found;
         });
 
+        try {
+          await ServiceLocator().scanHistoryService.addScan(artifact);
+        } catch (_) {
+          // Ignore history failures so scanning remains responsive.
+        }
+
         await _cameraController.stop();
       } else {
         setState(() {
@@ -711,3 +717,4 @@ class _OverlayCard extends StatelessWidget {
     );
   }
 }
+
