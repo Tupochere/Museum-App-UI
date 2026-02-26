@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
 import '../../core/domain/entities/artifact.dart';
 import '../../core/models/ui_models.dart';
 import '../../core/services/service_locator.dart';
@@ -19,26 +20,32 @@ class ScanScreen extends StatefulWidget {
 
 class _ScanScreenState extends State<ScanScreen> with SingleTickerProviderStateMixin {
   late final AnimationController _scanController;
-  Timer? _simulateFoundTimer;
+  late MobileScannerController _cameraController;
+
   bool _flashOn = false;
   ScanViewState _state = ScanViewState.searching;
   Artifact? _scannedArtifact;
-  String _simulatedQrCode = 'MASK001';
-
-  static const _bgUrl =
-      'https://lh3.googleusercontent.com/aida-public/AB6AXuA-QdLXYVLcupowILko324Kow061FlJG19lwvli15SKT4z1k_2QOKiyYqmkAZBBu5ZXvkIxasMZdDQnOjnRW3AkuAw35MTJbv8KBEBBEBAAmRK84WHyNj_QgMJRyXB87UE2S_8sj9Frzrt01OcoKGDgQr-NxLe-xX-XpY-9adoOk44nx6-YZqIKb9QPBHTmtprFexVhdIVTN9L40p5Y_XJ9keomSVFMBLk2U-X2LF35RPVmX9FP4LhL6zDV6Ln1WJDW9tBZyh7J2TsX';
+  bool _isProcessing = false;
 
   @override
   void initState() {
     super.initState();
-    _scanController = AnimationController(vsync: this, duration: const Duration(seconds: 3))..repeat();
-    _restartScanSimulation();
+    _scanController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 3),
+    )..repeat();
+
+    _cameraController = MobileScannerController(
+      detectionSpeed: DetectionSpeed.noDuplicates,
+      facing: CameraFacing.back,
+      torchEnabled: false,
+    );
   }
 
   @override
   void dispose() {
-    _simulateFoundTimer?.cancel();
     _scanController.dispose();
+    _cameraController.dispose();
     super.dispose();
   }
 
@@ -51,23 +58,32 @@ class _ScanScreenState extends State<ScanScreen> with SingleTickerProviderStateM
       backgroundColor: Colors.black,
       body: Stack(
         children: [
-          Positioned.fill(
-            child: Image.network(
-              _bgUrl,
-              fit: BoxFit.cover,
-              color: Colors.black.withOpacity(0.10),
-              colorBlendMode: BlendMode.darken,
+          if (!permissionState)
+            Positioned.fill(
+              child: MobileScanner(
+                controller: _cameraController,
+                onDetect: _handleBarcodeScan,
+                errorBuilder: (context, error, child) {
+                  return Center(
+                    child: Text(
+                      'Camera Error: ${error.errorCode}',
+                      style: const TextStyle(color: Colors.white),
+                    ),
+                  );
+                },
+              ),
             ),
-          ),
-          Positioned.fill(child: Container(color: Colors.black.withOpacity(0.10))),
+          if (!permissionState)
+            Positioned.fill(
+              child: Container(color: Colors.black.withOpacity(0.20)),
+            ),
           SafeArea(
             child: Column(
               children: [
                 _TopArea(
                   flashOn: _flashOn,
                   onBack: () => Navigator.pop(context),
-                  onFlash: () => setState(() => _flashOn = !_flashOn),
-                  onLongPressTitle: _cycleUiStates,
+                  onFlash: _toggleFlash,
                 ),
                 Expanded(
                   child: Stack(
@@ -85,7 +101,11 @@ class _ScanScreenState extends State<ScanScreen> with SingleTickerProviderStateM
                             title: 'Camera Access Needed',
                             message: 'Allow camera access so the app can recognize artifacts and AR triggers.',
                             actionLabel: 'Enable Camera',
-                            onAction: () => setState(() => _state = ScanViewState.searching),
+                            onAction: () async {
+                              await _cameraController.start();
+                              if (!mounted) return;
+                              setState(() => _state = ScanViewState.searching);
+                            },
                           ),
                         ),
                       if (_state == ScanViewState.found && _scannedArtifact != null)
@@ -98,7 +118,9 @@ class _ScanScreenState extends State<ScanScreen> with SingleTickerProviderStateM
                             onView: () {
                               Navigator.of(context).push(
                                 MaterialPageRoute(
-                                  builder: (_) => ArtifactDetailsScreen(artifact: _scannedArtifact!),
+                                  builder: (_) => ArtifactDetailsScreen(
+                                    artifact: _scannedArtifact!,
+                                  ),
                                 ),
                               );
                             },
@@ -110,10 +132,12 @@ class _ScanScreenState extends State<ScanScreen> with SingleTickerProviderStateM
                           right: AppSpacing.lg,
                           bottom: h * 0.24,
                           child: _NoMatchCard(
-                            onRetry: _restartScanSimulation,
+                            onRetry: _restartScanning,
                             onOpenFallback: () {
                               Navigator.of(context).push(
-                                MaterialPageRoute(builder: (_) => const ArtifactNotFoundScreen()),
+                                MaterialPageRoute(
+                                  builder: (_) => const ArtifactNotFoundScreen(),
+                                ),
                               );
                             },
                           ),
@@ -153,34 +177,61 @@ class _ScanScreenState extends State<ScanScreen> with SingleTickerProviderStateM
       case ScanViewState.searching:
         return const _SearchingPill(key: ValueKey('searching'));
       case ScanViewState.found:
-        return const _StatusPill(icon: Icons.check_circle, label: 'ARTIFACT FOUND', color: Color(0xFF2E7D32));
+        return const _StatusPill(
+          icon: Icons.check_circle,
+          label: 'ARTIFACT FOUND',
+          color: Color(0xFF2E7D32),
+        );
       case ScanViewState.error:
         return _RetryPill(
           label: 'SCAN FAILED',
-          onRetry: _restartScanSimulation,
+          onRetry: _restartScanning,
         );
       case ScanViewState.permissionDenied:
-        return const _StatusPill(icon: Icons.block, label: 'CAMERA OFF', color: Color(0xFFC62828));
+        return const _StatusPill(
+          icon: Icons.block,
+          label: 'CAMERA OFF',
+          color: Color(0xFFC62828),
+        );
       case ScanViewState.lowLight:
-        return const _StatusPill(icon: Icons.wb_incandescent_outlined, label: 'LOW LIGHT', color: Color(0xFFE2725B));
+        return const _StatusPill(
+          icon: Icons.wb_incandescent_outlined,
+          label: 'LOW LIGHT',
+          color: Color(0xFFE2725B),
+        );
       case ScanViewState.noMatch:
-        return _RetryPill(label: 'NO MATCH', onRetry: _restartScanSimulation);
+        return _RetryPill(
+          label: 'NO MATCH',
+          onRetry: _restartScanning,
+        );
     }
   }
 
-  void _restartScanSimulation() {
-    _simulateFoundTimer?.cancel();
+  void _toggleFlash() {
+    setState(() => _flashOn = !_flashOn);
+    _cameraController.toggleTorch();
+  }
+
+  void _restartScanning() {
     setState(() {
       _state = ScanViewState.searching;
       _scannedArtifact = null;
+      _isProcessing = false;
     });
-    _simulateFoundTimer = Timer(const Duration(seconds: 2), () async {
-      if (!mounted) return;
-      await _handleQrCodeScanned(_simulatedQrCode);
-    });
+    _cameraController.start();
   }
 
-  Future<void> _handleQrCodeScanned(String qrCode) async {
+  void _handleBarcodeScan(BarcodeCapture capture) async {
+    if (_isProcessing) return;
+
+    final List<Barcode> barcodes = capture.barcodes;
+    if (barcodes.isEmpty) return;
+
+    final String? qrCode = barcodes.first.rawValue;
+    if (qrCode == null || qrCode.isEmpty) return;
+
+    _isProcessing = true;
+
     try {
       final repo = ServiceLocator().artifactRepository;
       final artifact = await repo.getArtifactByQrCode(qrCode);
@@ -192,26 +243,30 @@ class _ScanScreenState extends State<ScanScreen> with SingleTickerProviderStateM
           _scannedArtifact = artifact;
           _state = ScanViewState.found;
         });
+
+        await _cameraController.stop();
       } else {
         setState(() {
           _state = ScanViewState.noMatch;
         });
+
+        Future.delayed(const Duration(seconds: 3), () {
+          if (mounted) _restartScanning();
+        });
       }
-    } catch (e) {
+    } catch (_) {
       if (!mounted) return;
+
       setState(() {
         _state = ScanViewState.error;
       });
+
+      Future.delayed(const Duration(seconds: 2), () {
+        if (mounted) _restartScanning();
+      });
+    } finally {
+      _isProcessing = false;
     }
-  }
-
-  void _cycleUiStates() {
-    final qrCodes = ['MASK001', 'SHIELD001', 'POT001', 'DRUM001', 'INVALID_QR'];
-    final currentIndex = qrCodes.indexOf(_simulatedQrCode);
-    final nextIndex = (currentIndex + 1) % qrCodes.length;
-
-    _simulatedQrCode = qrCodes[nextIndex];
-    _restartScanSimulation();
   }
 }
 
@@ -220,13 +275,11 @@ class _TopArea extends StatelessWidget {
     required this.flashOn,
     required this.onBack,
     required this.onFlash,
-    required this.onLongPressTitle,
   });
 
   final bool flashOn;
   final VoidCallback onBack;
   final VoidCallback onFlash;
-  final VoidCallback onLongPressTitle;
 
   @override
   Widget build(BuildContext context) {
@@ -239,31 +292,39 @@ class _TopArea extends StatelessWidget {
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               _CircleIconButton(icon: Icons.arrow_back, onTap: onBack),
-              _CircleIconButton(icon: flashOn ? Icons.flash_on : Icons.flash_off, onTap: onFlash),
+              _CircleIconButton(
+                icon: flashOn ? Icons.flash_on : Icons.flash_off,
+                onTap: onFlash,
+              ),
             ],
           ),
           const SizedBox(height: 18),
-          GestureDetector(
-            onLongPress: onLongPressTitle,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 14),
-              decoration: BoxDecoration(
-                color: const Color(0xD9FDFBF7),
-                borderRadius: BorderRadius.circular(18),
-              ),
-              child: const Column(
-                children: [
-                  Text(
-                    'Point camera at artifact',
-                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900, color: AppColors.textMain),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 14),
+            decoration: BoxDecoration(
+              color: const Color(0xD9FDFBF7),
+              borderRadius: BorderRadius.circular(18),
+            ),
+            child: const Column(
+              children: [
+                Text(
+                  'Point camera at QR code',
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w900,
+                    color: AppColors.textMain,
                   ),
-                  SizedBox(height: 6),
-                  Text(
-                    'Align the object within the frame',
-                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.textMuted),
+                ),
+                SizedBox(height: 6),
+                Text(
+                  'Align the code within the frame',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.textMuted,
                   ),
-                ],
-              ),
+                ),
+              ],
             ),
           ),
         ],
@@ -405,7 +466,8 @@ class _SearchingPillState extends State<_SearchingPill> with SingleTickerProvide
   @override
   void initState() {
     super.initState();
-    _pulse = AnimationController(vsync: this, duration: const Duration(seconds: 1))..repeat(reverse: true);
+    _pulse = AnimationController(vsync: this, duration: const Duration(seconds: 1))
+      ..repeat(reverse: true);
   }
 
   @override
@@ -430,7 +492,10 @@ class _SearchingPillState extends State<_SearchingPill> with SingleTickerProvide
             },
           ),
           const SizedBox(width: 10),
-          const Text('SEARCHING...', style: TextStyle(fontWeight: FontWeight.w900, color: AppColors.textMain)),
+          const Text(
+            'SEARCHING...',
+            style: TextStyle(fontWeight: FontWeight.w900, color: AppColors.textMain),
+          ),
         ],
       ),
     );
@@ -456,7 +521,10 @@ class _StatusPill extends StatelessWidget {
         children: [
           Icon(icon, size: 16, color: color),
           const SizedBox(width: 10),
-          Text(label, style: const TextStyle(fontWeight: FontWeight.w900, color: AppColors.textMain)),
+          Text(
+            label,
+            style: const TextStyle(fontWeight: FontWeight.w900, color: AppColors.textMain),
+          ),
         ],
       ),
     );
@@ -474,7 +542,10 @@ class _RetryPill extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Text(label, style: const TextStyle(fontWeight: FontWeight.w900, color: AppColors.textMain)),
+          Text(
+            label,
+            style: const TextStyle(fontWeight: FontWeight.w900, color: AppColors.textMain),
+          ),
           const SizedBox(width: 10),
           TextButton(onPressed: onRetry, child: const Text('Retry')),
         ],
@@ -541,7 +612,11 @@ class _NoMatchCard extends StatelessWidget {
         children: [
           const Text(
             'No matching artifact found',
-            style: TextStyle(fontSize: 14, fontWeight: FontWeight.w900, color: AppColors.textMain),
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w900,
+              color: AppColors.textMain,
+            ),
           ),
           const SizedBox(height: 8),
           Row(
@@ -556,7 +631,10 @@ class _NoMatchCard extends StatelessWidget {
               Expanded(
                 child: ElevatedButton(
                   onPressed: onOpenFallback,
-                  style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary, foregroundColor: Colors.white),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.primary,
+                    foregroundColor: Colors.white,
+                  ),
                   child: const Text('Need Help'),
                 ),
               ),
@@ -605,15 +683,27 @@ class _OverlayCard extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(title, style: const TextStyle(fontWeight: FontWeight.w900, color: AppColors.textMain)),
+                Text(
+                  title,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w900,
+                    color: AppColors.textMain,
+                  ),
+                ),
                 const SizedBox(height: 4),
-                Text(subtitle, style: const TextStyle(fontSize: 12, color: AppColors.textMuted)),
+                Text(
+                  subtitle,
+                  style: const TextStyle(fontSize: 12, color: AppColors.textMuted),
+                ),
               ],
             ),
           ),
           ElevatedButton(
             onPressed: onAction,
-            style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary, foregroundColor: Colors.white),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.primary,
+              foregroundColor: Colors.white,
+            ),
             child: Text(actionLabel),
           ),
         ],
