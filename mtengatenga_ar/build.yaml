@@ -1,0 +1,5 @@
+targets:
+  $default:
+    builders:
+      brick_offline_first_with_supabase_build:
+        enabled: true
