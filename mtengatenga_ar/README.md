@@ -1,16 +1,34 @@
 # mtengatenga_ar
 
-A new Flutter project.
+Flutter museum app for artifact discovery, QR-based artifact lookup, and offline-first data access.
 
-## Getting Started
+## Quick Start
 
-This project is a starting point for a Flutter application.
+1. Create `.env` in `mtengatenga_ar/` with:
+   - `SUPABASE_URL`
+   - `SUPABASE_ANON_KEY`
+2. Install dependencies:
+   ```bash
+   flutter pub get
+   ```
+3. Run analysis:
+   ```bash
+   dart analyze
+   ```
+4. Run app:
+   ```bash
+   flutter run
+   ```
 
-A few resources to get you started if this is your first Flutter project:
+## Project Context Docs
 
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
+From repo root:
+- `AI_HANDOFF.md`
+- `docs/PROJECT_OVERVIEW.md`
+- `docs/TECH_ARCHITECTURE.md`
+- `docs/PROGRESS_AND_NEXT_STEPS.md`
+- `docs/GITHUB_PLAYBOOK.md`
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+Operational guides:
+- `GIT_BRANCH_WORKFLOW.md`
+- `WIRELESS_DEVICE_SETUP.md`

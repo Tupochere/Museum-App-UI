@@ -1,8 +1,14 @@
 import 'package:flutter/material.dart';
+import '../../core/domain/entities/artifact.model.dart';
 import '../../theme/app_tokens.dart';
 
 class ArtifactDetailsScreen extends StatefulWidget {
-  const ArtifactDetailsScreen({super.key});
+  const ArtifactDetailsScreen({
+    super.key,
+    this.artifact,
+  });
+
+  final Artifact? artifact;
 
   @override
   State<ArtifactDetailsScreen> createState() => _ArtifactDetailsScreenState();
@@ -21,6 +27,11 @@ class _ArtifactDetailsScreenState extends State<ArtifactDetailsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final artifactThumbUrl =
+        widget.artifact?.modelThumbnailUrl ??
+        widget.artifact?.displayImageUrl ??
+        _artifactThumbUrl;
+
     return Scaffold(
       backgroundColor: Colors.black,
       body: Stack(
@@ -121,7 +132,7 @@ class _ArtifactDetailsScreenState extends State<ArtifactDetailsScreen> {
                           ),
                           const SizedBox(width: 14),
                           _Thumb3D(
-                            imageUrl: _artifactThumbUrl,
+                            imageUrl: artifactThumbUrl,
                             onTap: () {
                               // UI only
                               ScaffoldMessenger.of(context).showSnackBar(
