@@ -1,0 +1,3 @@
+class ScanHistoryService {
+  const ScanHistoryService();
+}

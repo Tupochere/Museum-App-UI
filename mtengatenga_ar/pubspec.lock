@@ -170,7 +170,7 @@ packages:
     source: hosted
     version: "4.1.0"
   brick_supabase:
-    dependency: transitive
+    dependency: "direct main"
     description:
       name: brick_supabase
       sha256: d99306dc90fe93d63dece4c4efe94b3760674bed2a2e4749792567fae2de5d98

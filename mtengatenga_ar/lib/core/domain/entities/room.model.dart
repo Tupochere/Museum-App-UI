@@ -1,6 +1,6 @@
 import 'package:brick_offline_first_with_supabase/brick_offline_first_with_supabase.dart';
-
-part 'room.g.dart';
+import 'package:brick_sqlite/brick_sqlite.dart';
+import 'package:brick_supabase/brick_supabase.dart';
 
 @ConnectOfflineFirstWithSupabase(
   supabaseConfig: SupabaseSerializable(tableName: 'rooms'),
@@ -26,7 +26,7 @@ class Room extends OfflineFirstWithSupabaseModel {
   @Sqlite(name: 'display_order')
   final int? displayOrder;
 
-  const Room({
+  Room({
     required this.id,
     required this.name,
     this.description,

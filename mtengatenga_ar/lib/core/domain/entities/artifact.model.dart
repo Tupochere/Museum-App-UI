@@ -1,6 +1,6 @@
 import 'package:brick_offline_first_with_supabase/brick_offline_first_with_supabase.dart';
-
-part 'artifact.g.dart';
+import 'package:brick_sqlite/brick_sqlite.dart';
+import 'package:brick_supabase/brick_supabase.dart';
 
 @ConnectOfflineFirstWithSupabase(
   supabaseConfig: SupabaseSerializable(tableName: 'artifacts'),
@@ -78,7 +78,7 @@ class Artifact extends OfflineFirstWithSupabaseModel {
   @Sqlite(name: 'updated_at')
   final DateTime updatedAt;
 
-  const Artifact({
+  Artifact({
     required this.id,
     required this.name,
     this.subtitle,
@@ -119,7 +119,7 @@ class TimelineEvent extends OfflineFirstWithSupabaseModel {
   @Sqlite(name: 'artifact_id')
   final String? artifactId;
 
-  const TimelineEvent({
+  TimelineEvent({
     this.id,
     required this.year,
     required this.event,
