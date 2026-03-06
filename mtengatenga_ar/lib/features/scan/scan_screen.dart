@@ -28,9 +28,21 @@ class _ScanScreenState extends State<ScanScreen> with SingleTickerProviderStateM
   ScanViewState _state = ScanViewState.searching;
   Artifact? _scannedArtifact;
   bool _isProcessing = false;
+  bool _hasNavigatedToDetails = false;
+  String? _lastScanError;
+  String? _lastScannedValue;
 
-  IArtifactRepository get _artifactRepository => ServiceLocator.instance<IArtifactRepository>();
-  ScanHistoryService get _scanHistoryService => ServiceLocator.instance<ScanHistoryService>();
+  IArtifactRepository? get _artifactRepository {
+    final getIt = ServiceLocator.instance;
+    if (!getIt.isRegistered<IArtifactRepository>()) return null;
+    return getIt<IArtifactRepository>();
+  }
+
+  ScanHistoryService? get _scanHistoryService {
+    final getIt = ServiceLocator.instance;
+    if (!getIt.isRegistered<ScanHistoryService>()) return null;
+    return getIt<ScanHistoryService>();
+  }
 
   @override
   void initState() {
@@ -129,6 +141,7 @@ class _ScanScreenState extends State<ScanScreen> with SingleTickerProviderStateM
                           bottom: h * 0.24,
                           child: _NoMatchCard(
                             onRetry: _restartScanning,
+                            scannedValue: _lastScannedValue,
                             onOpenFallback: () {
                               Navigator.of(context).push(
                                 MaterialPageRoute(builder: (_) => const ArtifactNotFoundScreen()),
@@ -197,6 +210,9 @@ class _ScanScreenState extends State<ScanScreen> with SingleTickerProviderStateM
       _state = ScanViewState.searching;
       _scannedArtifact = null;
       _isProcessing = false;
+      _hasNavigatedToDetails = false;
+      _lastScanError = null;
+      _lastScannedValue = null;
     });
     _cameraController.start();
   }
@@ -204,43 +220,99 @@ class _ScanScreenState extends State<ScanScreen> with SingleTickerProviderStateM
   Future<void> _handleBarcodeScan(BarcodeCapture capture) async {
     if (_isProcessing) return;
 
-    final barcodes = capture.barcodes;
-    if (barcodes.isEmpty) return;
+    final qrCode = _extractQrValue(capture.barcodes);
+    if (qrCode == null) return;
 
-    final qrCode = barcodes.first.rawValue;
-    if (qrCode == null || qrCode.isEmpty) return;
+    debugPrint('QR detected: "$qrCode"');
+    _lastScannedValue = qrCode;
+
+    final repository = _artifactRepository;
+    if (repository == null) {
+      setState(() {
+        _lastScanError = 'Data layer not initialized. Restart app and verify .env.';
+        _state = ScanViewState.error;
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Data layer not initialized. Check .env SUPABASE_URL and SUPABASE_ANON_KEY.'),
+          ),
+        );
+      }
+      _isProcessing = false;
+      return;
+    }
 
     _isProcessing = true;
 
     try {
-      final artifact = await _artifactRepository.getArtifactByQrCode(qrCode);
+      final artifact = await repository.getArtifactByQrCode(qrCode);
 
       if (!mounted) return;
 
       if (artifact != null) {
+        debugPrint(
+          'QR matched artifact: id=${artifact.id}, qr=${artifact.qrCode}, name=${artifact.name}',
+        );
         setState(() {
           _scannedArtifact = artifact;
           _state = ScanViewState.found;
         });
 
         try {
-          await _scanHistoryService.addScan(artifact);
+          await _scanHistoryService?.addScan(artifact);
         } catch (_) {
           // Keep scanning responsive even if history persistence fails.
         }
 
-        await _cameraController.stop();
+        try {
+          await _cameraController.stop();
+        } catch (_) {
+          // Camera stop failures should not block artifact navigation.
+        }
+
+        if (!_hasNavigatedToDetails && mounted) {
+          _hasNavigatedToDetails = true;
+          try {
+            await Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => ArtifactDetailsScreen(artifact: artifact),
+              ),
+            );
+          } catch (_) {
+            // Navigation failure should gracefully resume scanner.
+          }
+          if (mounted) {
+            _restartScanning();
+          }
+        }
       } else {
         setState(() => _state = ScanViewState.noMatch);
+        if (mounted) {
+          final preview = qrCode.length > 80 ? '${qrCode.substring(0, 80)}...' : qrCode;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('No match for QR: $preview')),
+          );
+        }
 
         Future.delayed(const Duration(seconds: 3), () {
           if (mounted) _restartScanning();
         });
       }
-    } catch (_) {
+    } catch (error, stackTrace) {
+      debugPrint('Scan lookup failed for "$qrCode": $error');
+      debugPrintStack(stackTrace: stackTrace);
+
       if (!mounted) return;
 
-      setState(() => _state = ScanViewState.error);
+      setState(() {
+        _lastScanError = _friendlyError(error);
+        _state = ScanViewState.error;
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Scan failed: $_lastScanError')),
+      );
 
       Future.delayed(const Duration(seconds: 2), () {
         if (mounted) _restartScanning();
@@ -248,6 +320,25 @@ class _ScanScreenState extends State<ScanScreen> with SingleTickerProviderStateM
     } finally {
       _isProcessing = false;
     }
+  }
+
+  String _friendlyError(Object error) {
+    final text = error.toString();
+    if (text.contains('SUPABASE_URL')) return 'Missing SUPABASE_URL in .env';
+    if (text.contains('SUPABASE_ANON_KEY')) return 'Missing SUPABASE_ANON_KEY in .env';
+    if (text.contains('not registered inside GetIt')) return 'Services not initialized';
+    return text;
+  }
+
+  String? _extractQrValue(List<Barcode> barcodes) {
+    for (final barcode in barcodes) {
+      final raw = barcode.rawValue?.trim();
+      if (raw != null && raw.isNotEmpty) return raw;
+
+      final display = barcode.displayValue?.trim();
+      if (display != null && display.isNotEmpty) return display;
+    }
+    return null;
   }
 }
 
@@ -555,10 +646,12 @@ class _NoMatchCard extends StatelessWidget {
   const _NoMatchCard({
     required this.onRetry,
     required this.onOpenFallback,
+    this.scannedValue,
   });
 
   final VoidCallback onRetry;
   final VoidCallback onOpenFallback;
+  final String? scannedValue;
 
   @override
   Widget build(BuildContext context) {
@@ -574,6 +667,20 @@ class _NoMatchCard extends StatelessWidget {
             'No matching artifact found',
             style: TextStyle(fontSize: 14, fontWeight: FontWeight.w900, color: AppColors.textMain),
           ),
+          if (scannedValue != null && scannedValue!.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text(
+              scannedValue!.length > 60 ? '${scannedValue!.substring(0, 60)}...' : scannedValue!,
+              style: const TextStyle(
+                fontSize: 11,
+                color: AppColors.textMuted,
+                fontWeight: FontWeight.w600,
+              ),
+              textAlign: TextAlign.center,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ],
           const SizedBox(height: 8),
           Row(
             children: [

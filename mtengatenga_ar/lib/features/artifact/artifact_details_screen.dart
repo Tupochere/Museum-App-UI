@@ -128,7 +128,7 @@ class _ArtifactDetailsScreenState extends State<ArtifactDetailsScreen> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Expanded(
-                            child: _HeaderTextBlock(),
+                            child: _HeaderTextBlock(artifact: widget.artifact),
                           ),
                           const SizedBox(width: 14),
                           _Thumb3D(
@@ -198,7 +198,10 @@ class _ArtifactDetailsScreenState extends State<ArtifactDetailsScreen> {
                       child: SingleChildScrollView(
                         controller: scrollController,
                         padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
-                        child: _TabContent(tabIndex: _tabIndex),
+                        child: _TabContent(
+                          tabIndex: _tabIndex,
+                          artifact: widget.artifact,
+                        ),
                       ),
                     ),
                   ],
@@ -281,8 +284,17 @@ class _FrameCorner extends StatelessWidget {
 }
 
 class _HeaderTextBlock extends StatelessWidget {
+  const _HeaderTextBlock({this.artifact});
+
+  final Artifact? artifact;
+
   @override
   Widget build(BuildContext context) {
+    final category = artifact?.category?.toUpperCase() ?? 'CULTURAL HERITAGE';
+    final period = artifact?.period ?? 'Unknown Period';
+    final title = artifact?.name ?? 'Artifact Details';
+    final location = artifact?.location ?? 'Location unavailable';
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -294,8 +306,8 @@ class _HeaderTextBlock extends StatelessWidget {
                 color: const Color(0xFFE07A5F).withOpacity(0.10), // terracotta/10 :contentReference[oaicite:12]{index=12}
                 borderRadius: BorderRadius.circular(6),
               ),
-              child: const Text(
-                'CULTURAL HERITAGE',
+              child: Text(
+                category,
                 style: TextStyle(
                   color: Color(0xFFE07A5F),
                   fontSize: 10,
@@ -305,8 +317,8 @@ class _HeaderTextBlock extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 10),
-            const Text(
-              '19th Century',
+            Text(
+              period,
               style: TextStyle(
                 color: Color(0xFF78716C), // stone-500
                 fontSize: 12,
@@ -316,8 +328,8 @@ class _HeaderTextBlock extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 10),
-        const Text(
-          'Ancestral Mask of\nthe Gule Wamkulu',
+        Text(
+          title,
           style: TextStyle(
             color: AppColors.textMain, // earth-dark :contentReference[oaicite:13]{index=13}
             fontSize: 26,
@@ -326,8 +338,8 @@ class _HeaderTextBlock extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 8),
-        const Text(
-          'Lilongwe, Malawi',
+        Text(
+          location,
           style: TextStyle(
             color: Color(0xFF78716C),
             fontSize: 14,
@@ -451,47 +463,54 @@ class _Tabs extends StatelessWidget {
 }
 
 class _TabContent extends StatelessWidget {
-  const _TabContent({required this.tabIndex});
+  const _TabContent({
+    required this.tabIndex,
+    this.artifact,
+  });
+
   final int tabIndex;
+  final Artifact? artifact;
 
   @override
   Widget build(BuildContext context) {
     switch (tabIndex) {
       case 1:
-        return const _HistoryTab();
+        return _HistoryTab(artifact: artifact);
       case 2:
-        return const _MediaTab();
+        return _MediaTab(artifact: artifact);
       default:
-        return const _OverviewTab();
+        return _OverviewTab(artifact: artifact);
     }
   }
 }
 
 class _OverviewTab extends StatelessWidget {
-  const _OverviewTab();
+  const _OverviewTab({this.artifact});
+
+  final Artifact? artifact;
 
   @override
   Widget build(BuildContext context) {
-    return const Column(
+    final description = artifact?.description ?? 'No description is available for this artifact yet.';
+    final significance = artifact?.culturalSignificance ??
+        'Cultural significance details are not available yet for this artifact.';
+    final notes = artifact?.additionalNotes ?? 'Additional notes are not available.';
+
+    return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        SizedBox(height: 10),
+        const SizedBox(height: 10),
         Text(
-          'This mask represents the spirit of the ancestors and is a pivotal element of the '
-          'Gule Wamkulu ("Great Dance"). It is crafted from wood, feathers, and traditional '
-          'pigments sourced from the central region.\n\n'
-          'The Gule Wamkulu is a secret cult and ritual dance practiced by the Chewa people. '
-          'The mask you are viewing is believed to have been used during initiation ceremonies '
-          'in the late 1800s.',
-          style: TextStyle(
+          description,
+          style: const TextStyle(
             color: AppColors.textMain,
             fontSize: 18,
             height: 1.5,
             fontWeight: FontWeight.w600,
           ),
         ),
-        SizedBox(height: 22),
-        Text(
+        const SizedBox(height: 22),
+        const Text(
           'Cultural Significance',
           style: TextStyle(
             color: AppColors.textMain,
@@ -499,42 +518,44 @@ class _OverviewTab extends StatelessWidget {
             fontWeight: FontWeight.w900,
           ),
         ),
-        SizedBox(height: 10),
+        const SizedBox(height: 10),
         Text(
-          'Masks like this one are not merely decorative; they are considered the embodiment '
-          'of the spirit world. When a dancer wears the mask, they lose their human identity '
-          'and become the spirit itself.',
-          style: TextStyle(
+          significance,
+          style: const TextStyle(
             color: AppColors.textMain,
             fontSize: 16,
             height: 1.5,
             fontWeight: FontWeight.w600,
           ),
         ),
-        SizedBox(height: 14),
-        _InfoBox(),
-        SizedBox(height: 18),
+        const SizedBox(height: 14),
+        _InfoBox(artifact: artifact),
+        const SizedBox(height: 18),
         Text(
-          'The geometric patterns on the forehead signify wisdom and the continuity of life. '
-          'The red ochre pigment represents the earth and vitality.',
-          style: TextStyle(
+          notes,
+          style: const TextStyle(
             color: AppColors.textMain,
             fontSize: 16,
             height: 1.5,
             fontWeight: FontWeight.w600,
           ),
         ),
-        SizedBox(height: 24),
+        const SizedBox(height: 24),
       ],
     );
   }
 }
 
 class _InfoBox extends StatelessWidget {
-  const _InfoBox();
+  const _InfoBox({this.artifact});
+
+  final Artifact? artifact;
 
   @override
   Widget build(BuildContext context) {
+    final period = artifact?.period ?? 'Unknown period';
+    final location = artifact?.location ?? 'Unknown location';
+
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
@@ -542,16 +563,15 @@ class _InfoBox extends StatelessWidget {
         borderRadius: BorderRadius.circular(12),
         border: Border.all(color: const Color(0xFFE7E5E4)), // stone-200
       ),
-      child: const Row(
+      child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(Icons.info_outline, color: Color(0xFFE07A5F)),
-          SizedBox(width: 10),
+          const Icon(Icons.info_outline, color: Color(0xFFE07A5F)),
+          const SizedBox(width: 10),
           Expanded(
             child: Text(
-              'This artifact was digitally preserved in 2023 as part of the '
-              '"Digital Heritage of Malawi" initiative.',
-              style: TextStyle(
+              'Period: $period\nLocation: $location',
+              style: const TextStyle(
                 color: Color(0xFF57534E),
                 fontSize: 13,
                 height: 1.35,
@@ -566,19 +586,23 @@ class _InfoBox extends StatelessWidget {
 }
 
 class _HistoryTab extends StatelessWidget {
-  const _HistoryTab();
+  const _HistoryTab({this.artifact});
+
+  final Artifact? artifact;
 
   @override
   Widget build(BuildContext context) {
+    final timeline = artifact?.timeline ?? const <TimelineEvent>[];
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const SizedBox(height: 12),
         _SectionTitle('Timeline'),
         const SizedBox(height: 10),
-        _TimelineItem(year: '1800s', text: 'Used during Chewa initiation ceremonies.'),
-        _TimelineItem(year: '1950s', text: 'Documented by regional cultural historians.'),
-        _TimelineItem(year: '2023', text: 'Digitally preserved under a heritage initiative.'),
+        if (timeline.isEmpty)
+          const _TimelineItem(year: 'N/A', text: 'No timeline information available for this artifact.'),
+        for (final event in timeline) _TimelineItem(year: event.year, text: event.event),
         const SizedBox(height: 24),
       ],
     );
@@ -586,18 +610,24 @@ class _HistoryTab extends StatelessWidget {
 }
 
 class _MediaTab extends StatelessWidget {
-  const _MediaTab();
+  const _MediaTab({this.artifact});
+
+  final Artifact? artifact;
 
   @override
   Widget build(BuildContext context) {
+    final photoCount = artifact?.galleryImages?.length ?? 0;
+    final videoCount = artifact?.videoUrls?.length ?? 0;
+    final hasModel = (artifact?.model3dUrl?.isNotEmpty ?? false);
+
     return Column(
       children: [
         const SizedBox(height: 12),
         _SectionTitle('Media'),
         const SizedBox(height: 12),
-        _MediaTile(icon: Icons.image_outlined, title: 'Photos', subtitle: '12 images'),
-        _MediaTile(icon: Icons.videocam_outlined, title: 'Videos', subtitle: '3 clips'),
-        _MediaTile(icon: Icons.threed_rotation, title: '3D Model', subtitle: 'View in AR'),
+        _MediaTile(icon: Icons.image_outlined, title: 'Photos', subtitle: '$photoCount image${photoCount == 1 ? '' : 's'}'),
+        _MediaTile(icon: Icons.videocam_outlined, title: 'Videos', subtitle: '$videoCount clip${videoCount == 1 ? '' : 's'}'),
+        _MediaTile(icon: Icons.threed_rotation, title: '3D Model', subtitle: hasModel ? 'Available' : 'Not available'),
         const SizedBox(height: 24),
       ],
     );

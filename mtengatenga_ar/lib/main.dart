@@ -9,8 +9,8 @@ import 'theme/app_theme.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await _bootstrapServices();
   runApp(const MtengatengaApp());
-  unawaited(_bootstrapServices());
 }
 
 Future<void> _bootstrapServices() async {
