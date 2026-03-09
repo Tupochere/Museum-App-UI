@@ -8,29 +8,34 @@ import '../../domain/repositories/artifact_repository.dart';
 import 'museum_repository.dart';
 
 class ArtifactRepositoryBrick implements IArtifactRepository {
-  // ignore: unnecessary_cast
-  MuseumRepository get _repository => BrickConfig.repository as MuseumRepository;
+  static const Map<String, String> _testModelUrlByArtifactQrCode = {
+    'MASK001': 'assets/models/mask_placeholder.glb',
+    'SHIELD001': 'assets/models/shield_placeholder.glb',
+  };
+
+  MuseumRepository get _repository => BrickConfig.repository;
 
   @override
   Future<List<Artifact>> getAllArtifacts() {
-    return _repository.get<Artifact>(
-      policy: OfflineFirstGetPolicy.awaitRemoteWhenNoneExist,
-    );
+    return _repository
+        .get<Artifact>(policy: OfflineFirstGetPolicy.awaitRemoteWhenNoneExist)
+        .then((artifacts) {
+          return artifacts
+              .map(_applyTestModelUrlOverride)
+              .toList(growable: false);
+        });
   }
 
   @override
   Future<Artifact?> getArtifactById(String id) async {
     try {
       final records = await _repository.get<Artifact>(
-        query: Query(
-          where: [Where.exact('id', id)],
-          limit: 1,
-        ),
+        query: Query(where: [Where.exact('id', id)], limit: 1),
         policy: OfflineFirstGetPolicy.awaitRemoteWhenNoneExist,
       );
 
       if (records.isEmpty) return null;
-      return records.first;
+      return _applyTestModelUrlOverride(records.first);
     } catch (_) {
       return _findArtifactByIdFromSupabase(id);
     }
@@ -38,12 +43,16 @@ class ArtifactRepositoryBrick implements IArtifactRepository {
 
   @override
   Future<List<Artifact>> getArtifactsByRoom(String roomId) {
-    return _repository.get<Artifact>(
-      query: Query(
-        where: [Where.exact('roomId', roomId)],
-      ),
-      policy: OfflineFirstGetPolicy.awaitRemoteWhenNoneExist,
-    );
+    return _repository
+        .get<Artifact>(
+          query: Query(where: [Where.exact('roomId', roomId)]),
+          policy: OfflineFirstGetPolicy.awaitRemoteWhenNoneExist,
+        )
+        .then((artifacts) {
+          return artifacts
+              .map(_applyTestModelUrlOverride)
+              .toList(growable: false);
+        });
   }
 
   @override
@@ -66,7 +75,9 @@ class ArtifactRepositoryBrick implements IArtifactRepository {
     }
 
     // Last fallback: pull all remote rows and compare normalized candidate variants.
-    final remoteByVariant = await _findArtifactByQrVariantsFromSupabase(candidates);
+    final remoteByVariant = await _findArtifactByQrVariantsFromSupabase(
+      candidates,
+    );
     if (remoteByVariant != null) {
       return remoteByVariant;
     }
@@ -76,12 +87,16 @@ class ArtifactRepositoryBrick implements IArtifactRepository {
 
   @override
   Future<List<Artifact>> getFeaturedArtifacts() {
-    return _repository.get<Artifact>(
-      query: Query(
-        where: [Where.exact('isFeatured', true)],
-      ),
-      policy: OfflineFirstGetPolicy.localOnly,
-    );
+    return _repository
+        .get<Artifact>(
+          query: Query(where: [Where.exact('isFeatured', true)]),
+          policy: OfflineFirstGetPolicy.localOnly,
+        )
+        .then((artifacts) {
+          return artifacts
+              .map(_applyTestModelUrlOverride)
+              .toList(growable: false);
+        });
   }
 
   List<String> _buildQrCandidates(String raw) {
@@ -95,7 +110,14 @@ class ArtifactRepositoryBrick implements IArtifactRepository {
 
     final uri = Uri.tryParse(trimmed);
     if (uri != null) {
-      final queryKeys = ['qr', 'code', 'qrcode', 'artifact', 'artifact_id', 'id'];
+      final queryKeys = [
+        'qr',
+        'code',
+        'qrcode',
+        'artifact',
+        'artifact_id',
+        'id',
+      ];
       for (final key in queryKeys) {
         final value = uri.queryParameters[key];
         if (value != null && value.trim().isNotEmpty) {
@@ -117,7 +139,11 @@ class ArtifactRepositoryBrick implements IArtifactRepository {
   List<String> _buildCaseVariants(String value) {
     final trimmed = value.trim();
     if (trimmed.isEmpty) return const [];
-    return <String>{trimmed, trimmed.toLowerCase(), trimmed.toUpperCase()}.toList(growable: false);
+    return <String>{
+      trimmed,
+      trimmed.toLowerCase(),
+      trimmed.toUpperCase(),
+    }.toList(growable: false);
   }
 
   String _normalizeQr(String value) {
@@ -129,7 +155,11 @@ class ArtifactRepositoryBrick implements IArtifactRepository {
     final client = sbf.Supabase.instance.client;
 
     try {
-      final row = await client.from('artifacts').select().eq('id', id).maybeSingle();
+      final row = await client
+          .from('artifacts')
+          .select()
+          .eq('id', id)
+          .maybeSingle();
       if (row == null) return null;
       return _artifactFromSupabaseRow(Map<String, dynamic>.from(row as Map));
     } catch (_) {
@@ -137,7 +167,9 @@ class ArtifactRepositoryBrick implements IArtifactRepository {
     }
   }
 
-  Future<Artifact?> _findArtifactByQrFromSupabase(List<String> candidates) async {
+  Future<Artifact?> _findArtifactByQrFromSupabase(
+    List<String> candidates,
+  ) async {
     final client = sbf.Supabase.instance.client;
 
     for (final candidate in candidates) {
@@ -152,7 +184,9 @@ class ArtifactRepositoryBrick implements IArtifactRepository {
               .maybeSingle();
 
           if (row != null) {
-            return _artifactFromSupabaseRow(Map<String, dynamic>.from(row as Map));
+            return _artifactFromSupabaseRow(
+              Map<String, dynamic>.from(row as Map),
+            );
           }
         } catch (_) {
           // Continue trying remaining candidates.
@@ -161,9 +195,15 @@ class ArtifactRepositoryBrick implements IArtifactRepository {
 
       try {
         for (final variant in variants) {
-          final row = await client.from('artifacts').select().eq('id', variant).maybeSingle();
+          final row = await client
+              .from('artifacts')
+              .select()
+              .eq('id', variant)
+              .maybeSingle();
           if (row != null) {
-            return _artifactFromSupabaseRow(Map<String, dynamic>.from(row as Map));
+            return _artifactFromSupabaseRow(
+              Map<String, dynamic>.from(row as Map),
+            );
           }
         }
       } catch (_) {
@@ -174,7 +214,9 @@ class ArtifactRepositoryBrick implements IArtifactRepository {
     return null;
   }
 
-  Future<Artifact?> _findArtifactByQrFromLocalCache(List<String> candidates) async {
+  Future<Artifact?> _findArtifactByQrFromLocalCache(
+    List<String> candidates,
+  ) async {
     try {
       final cached = await _repository.get<Artifact>(
         policy: OfflineFirstGetPolicy.localOnly,
@@ -188,7 +230,7 @@ class ArtifactRepositoryBrick implements IArtifactRepository {
         artifactCandidates.addAll(_buildQrCandidates(artifact.id));
 
         if (_hasCandidateOverlap(candidates, artifactCandidates)) {
-          return artifact;
+          return _applyTestModelUrlOverride(artifact);
         }
       }
     } catch (_) {
@@ -198,7 +240,9 @@ class ArtifactRepositoryBrick implements IArtifactRepository {
     return null;
   }
 
-  Future<Artifact?> _findArtifactByQrVariantsFromSupabase(List<String> candidates) async {
+  Future<Artifact?> _findArtifactByQrVariantsFromSupabase(
+    List<String> candidates,
+  ) async {
     final client = sbf.Supabase.instance.client;
 
     try {
@@ -231,35 +275,80 @@ class ArtifactRepositoryBrick implements IArtifactRepository {
       final events = <TimelineEvent>[];
       for (final item in timelineRaw) {
         if (item is Map) {
-          final mapped = _timelineEventFromDynamic(Map<String, dynamic>.from(item));
+          final mapped = _timelineEventFromDynamic(
+            Map<String, dynamic>.from(item),
+          );
           if (mapped != null) events.add(mapped);
         }
       }
       timeline = events.isEmpty ? null : events;
     }
 
+    return _applyTestModelUrlOverride(
+      Artifact(
+        id: id,
+        name: name,
+        subtitle: _asString(row['subtitle']),
+        category: _asString(row['category']),
+        period: _asString(row['period']),
+        description: _asString(row['description']) ?? '',
+        culturalSignificance: _asString(row['cultural_significance']),
+        additionalNotes: _asString(row['additional_notes']),
+        timeline: timeline,
+        markerImageUrl: _asString(row['marker_image_url']),
+        displayImageUrl: _asString(row['display_image_url']),
+        galleryImages: _asStringList(row['gallery_images']),
+        audioUrl: _asString(row['audio_url']),
+        videoUrls: _asStringList(row['video_urls']),
+        model3dUrl: _asString(row['model_3d_url']),
+        modelThumbnailUrl: _asString(row['model_thumbnail_url']),
+        roomId: _asString(row['room_id']),
+        location: _asString(row['location']),
+        qrCode: _asString(row['qr_code']),
+        isFeatured: _asBool(row['is_featured']),
+        updatedAt: _parseDateTime(row['updated_at']),
+      ),
+    );
+  }
+
+  Artifact _applyTestModelUrlOverride(Artifact artifact) {
+    final current = artifact.model3dUrl?.trim();
+    if (current != null && current.isNotEmpty) {
+      return artifact;
+    }
+
+    final qrCodeKey = artifact.qrCode?.trim().toUpperCase();
+    if (qrCodeKey == null || qrCodeKey.isEmpty) {
+      return artifact;
+    }
+
+    final override = _testModelUrlByArtifactQrCode[qrCodeKey];
+    if (override == null || override.isEmpty) {
+      return artifact;
+    }
+
     return Artifact(
-      id: id,
-      name: name,
-      subtitle: _asString(row['subtitle']),
-      category: _asString(row['category']),
-      period: _asString(row['period']),
-      description: _asString(row['description']) ?? '',
-      culturalSignificance: _asString(row['cultural_significance']),
-      additionalNotes: _asString(row['additional_notes']),
-      timeline: timeline,
-      markerImageUrl: _asString(row['marker_image_url']),
-      displayImageUrl: _asString(row['display_image_url']),
-      galleryImages: _asStringList(row['gallery_images']),
-      audioUrl: _asString(row['audio_url']),
-      videoUrls: _asStringList(row['video_urls']),
-      model3dUrl: _asString(row['model3d_url']),
-      modelThumbnailUrl: _asString(row['model_thumbnail_url']),
-      roomId: _asString(row['room_id']),
-      location: _asString(row['location']),
-      qrCode: _asString(row['qr_code']),
-      isFeatured: _asBool(row['is_featured']),
-      updatedAt: _parseDateTime(row['updated_at']),
+      id: artifact.id,
+      name: artifact.name,
+      subtitle: artifact.subtitle,
+      category: artifact.category,
+      period: artifact.period,
+      description: artifact.description,
+      culturalSignificance: artifact.culturalSignificance,
+      additionalNotes: artifact.additionalNotes,
+      timeline: artifact.timeline,
+      markerImageUrl: artifact.markerImageUrl,
+      displayImageUrl: artifact.displayImageUrl,
+      galleryImages: artifact.galleryImages,
+      audioUrl: artifact.audioUrl,
+      videoUrls: artifact.videoUrls,
+      model3dUrl: override,
+      modelThumbnailUrl: artifact.modelThumbnailUrl,
+      roomId: artifact.roomId,
+      location: artifact.location,
+      qrCode: artifact.qrCode,
+      isFeatured: artifact.isFeatured,
+      updatedAt: artifact.updatedAt,
     );
   }
 
@@ -285,7 +374,10 @@ class ArtifactRepositoryBrick implements IArtifactRepository {
 
   List<String>? _asStringList(dynamic value) {
     if (value is! List) return null;
-    final list = value.map((item) => item.toString()).where((item) => item.isNotEmpty).toList();
+    final list = value
+        .map((item) => item.toString())
+        .where((item) => item.isNotEmpty)
+        .toList();
     if (list.isEmpty) return null;
     return list;
   }

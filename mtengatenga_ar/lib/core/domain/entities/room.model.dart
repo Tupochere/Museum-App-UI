@@ -14,24 +14,5 @@ class Room extends OfflineFirstWithSupabaseModel {
 
   final String? description;
 
-  @Supabase(name: 'image_url')
-  @Sqlite(name: 'image_url')
-  final String? imageUrl;
-
-  @Supabase(name: 'floor_level')
-  @Sqlite(name: 'floor_level')
-  final int? floorLevel;
-
-  @Supabase(name: 'display_order')
-  @Sqlite(name: 'display_order')
-  final int? displayOrder;
-
-  Room({
-    required this.id,
-    required this.name,
-    this.description,
-    this.imageUrl,
-    this.floorLevel,
-    this.displayOrder,
-  });
+  Room({required this.id, required this.name, this.description});
 }

@@ -5,6 +5,10 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+configurations.all {
+    exclude(group = "com.android.support", module = "support-compat")
+}
+
 android {
     namespace = "com.example.mtengatenga_ar"
     compileSdk = flutter.compileSdkVersion
@@ -24,7 +28,7 @@ android {
         applicationId = "com.example.mtengatenga_ar"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
-        minSdk = flutter.minSdkVersion
+        minSdk = 24
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName

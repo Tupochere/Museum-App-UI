@@ -52,7 +52,7 @@ class Artifact extends OfflineFirstWithSupabaseModel {
   @Sqlite(name: 'video_urls')
   final List<String>? videoUrls;
 
-  @Supabase(name: 'model3d_url')
+  @Supabase(name: 'model_3d_url')
   @Sqlite(name: 'model3d_url')
   final String? model3dUrl;
 

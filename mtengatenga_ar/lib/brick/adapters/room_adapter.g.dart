@@ -12,13 +12,6 @@ Future<Room> _$RoomFromSupabase(
     description: data['description'] == null
         ? null
         : data['description'] as String?,
-    imageUrl: data['image_url'] == null ? null : data['image_url'] as String?,
-    floorLevel: data['floor_level'] == null
-        ? null
-        : data['floor_level'] as int?,
-    displayOrder: data['display_order'] == null
-        ? null
-        : data['display_order'] as int?,
   );
 }
 
@@ -31,9 +24,6 @@ Future<Map<String, dynamic>> _$RoomToSupabase(
     'id': instance.id,
     'name': instance.name,
     'description': instance.description,
-    'image_url': instance.imageUrl,
-    'floor_level': instance.floorLevel,
-    'display_order': instance.displayOrder,
   };
 }
 
@@ -48,13 +38,6 @@ Future<Room> _$RoomFromSqlite(
     description: data['description'] == null
         ? null
         : data['description'] as String?,
-    imageUrl: data['image_url'] == null ? null : data['image_url'] as String?,
-    floorLevel: data['floor_level'] == null
-        ? null
-        : data['floor_level'] as int?,
-    displayOrder: data['display_order'] == null
-        ? null
-        : data['display_order'] as int?,
   )..primaryKey = data['_brick_id'] as int;
 }
 
@@ -67,9 +50,6 @@ Future<Map<String, dynamic>> _$RoomToSqlite(
     'id': instance.id,
     'name': instance.name,
     'description': instance.description,
-    'image_url': instance.imageUrl,
-    'floor_level': instance.floorLevel,
-    'display_order': instance.displayOrder,
   };
 }
 
@@ -94,18 +74,6 @@ class RoomAdapter extends OfflineFirstWithSupabaseAdapter<Room> {
     'description': const RuntimeSupabaseColumnDefinition(
       association: false,
       columnName: 'description',
-    ),
-    'imageUrl': const RuntimeSupabaseColumnDefinition(
-      association: false,
-      columnName: 'image_url',
-    ),
-    'floorLevel': const RuntimeSupabaseColumnDefinition(
-      association: false,
-      columnName: 'floor_level',
-    ),
-    'displayOrder': const RuntimeSupabaseColumnDefinition(
-      association: false,
-      columnName: 'display_order',
     ),
   };
   @override
@@ -137,24 +105,6 @@ class RoomAdapter extends OfflineFirstWithSupabaseAdapter<Room> {
       columnName: 'description',
       iterable: false,
       type: String,
-    ),
-    'imageUrl': const RuntimeSqliteColumnDefinition(
-      association: false,
-      columnName: 'image_url',
-      iterable: false,
-      type: String,
-    ),
-    'floorLevel': const RuntimeSqliteColumnDefinition(
-      association: false,
-      columnName: 'floor_level',
-      iterable: false,
-      type: int,
-    ),
-    'displayOrder': const RuntimeSqliteColumnDefinition(
-      association: false,
-      columnName: 'display_order',
-      iterable: false,
-      type: int,
     ),
   };
   @override

@@ -47,9 +47,9 @@ Future<Artifact> _$ArtifactFromSupabase(
     videoUrls: data['video_urls'] == null
         ? null
         : data['video_urls']?.toList().cast<String>(),
-    model3dUrl: data['model3d_url'] == null
+    model3dUrl: data['model_3d_url'] == null
         ? null
-        : data['model3d_url'] as String?,
+        : data['model_3d_url'] as String?,
     modelThumbnailUrl: data['model_thumbnail_url'] == null
         ? null
         : data['model_thumbnail_url'] as String?,
@@ -92,7 +92,7 @@ Future<Map<String, dynamic>> _$ArtifactToSupabase(
     'gallery_images': instance.galleryImages,
     'audio_url': instance.audioUrl,
     'video_urls': instance.videoUrls,
-    'model3d_url': instance.model3dUrl,
+    'model_3d_url': instance.model3dUrl,
     'model_thumbnail_url': instance.modelThumbnailUrl,
     'room_id': instance.roomId,
     'location': instance.location,
@@ -270,7 +270,7 @@ class ArtifactAdapter extends OfflineFirstWithSupabaseAdapter<Artifact> {
     ),
     'model3dUrl': const RuntimeSupabaseColumnDefinition(
       association: false,
-      columnName: 'model3d_url',
+      columnName: 'model_3d_url',
     ),
     'modelThumbnailUrl': const RuntimeSupabaseColumnDefinition(
       association: false,

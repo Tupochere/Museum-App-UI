@@ -14,8 +14,20 @@ const List<MigrationCommand> _migration_20260228173234_up = [
   InsertTable('Artifact'),
   InsertTable('TimelineEvent'),
   InsertTable('Room'),
-  InsertForeignKey('_brick_Artifact_timeline', 'Artifact', foreignKeyColumn: 'l_Artifact_brick_id', onDeleteCascade: true, onDeleteSetDefault: false),
-  InsertForeignKey('_brick_Artifact_timeline', 'TimelineEvent', foreignKeyColumn: 'f_TimelineEvent_brick_id', onDeleteCascade: true, onDeleteSetDefault: false),
+  InsertForeignKey(
+    '_brick_Artifact_timeline',
+    'Artifact',
+    foreignKeyColumn: 'l_Artifact_brick_id',
+    onDeleteCascade: true,
+    onDeleteSetDefault: false,
+  ),
+  InsertForeignKey(
+    '_brick_Artifact_timeline',
+    'TimelineEvent',
+    foreignKeyColumn: 'f_TimelineEvent_brick_id',
+    onDeleteCascade: true,
+    onDeleteSetDefault: false,
+  ),
   InsertColumn('id', Column.varchar, onTable: 'Artifact', unique: true),
   InsertColumn('name', Column.varchar, onTable: 'Artifact'),
   InsertColumn('subtitle', Column.varchar, onTable: 'Artifact'),
@@ -43,10 +55,11 @@ const List<MigrationCommand> _migration_20260228173234_up = [
   InsertColumn('id', Column.varchar, onTable: 'Room', unique: true),
   InsertColumn('name', Column.varchar, onTable: 'Room'),
   InsertColumn('description', Column.varchar, onTable: 'Room'),
-  InsertColumn('image_url', Column.varchar, onTable: 'Room'),
-  InsertColumn('floor_level', Column.integer, onTable: 'Room'),
-  InsertColumn('display_order', Column.integer, onTable: 'Room'),
-  CreateIndex(columns: ['l_Artifact_brick_id', 'f_TimelineEvent_brick_id'], onTable: '_brick_Artifact_timeline', unique: true)
+  CreateIndex(
+    columns: ['l_Artifact_brick_id', 'f_TimelineEvent_brick_id'],
+    onTable: '_brick_Artifact_timeline',
+    unique: true,
+  ),
 ];
 
 const List<MigrationCommand> _migration_20260228173234_down = [
@@ -83,10 +96,9 @@ const List<MigrationCommand> _migration_20260228173234_down = [
   DropColumn('id', onTable: 'Room'),
   DropColumn('name', onTable: 'Room'),
   DropColumn('description', onTable: 'Room'),
-  DropColumn('image_url', onTable: 'Room'),
-  DropColumn('floor_level', onTable: 'Room'),
-  DropColumn('display_order', onTable: 'Room'),
-  DropIndex('index__brick_Artifact_timeline_on_l_Artifact_brick_id_f_TimelineEvent_brick_id')
+  DropIndex(
+    'index__brick_Artifact_timeline_on_l_Artifact_brick_id_f_TimelineEvent_brick_id',
+  ),
 ];
 
 //
