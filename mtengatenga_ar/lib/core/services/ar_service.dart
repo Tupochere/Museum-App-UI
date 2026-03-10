@@ -31,11 +31,9 @@ class ArService {
         _status = ArAvailabilityStatus.unsupported;
         return _status;
       }
-
-      final installation = await ArCoreController.checkIsArCoreInstalled();
-      _status = installation == true
-          ? ArAvailabilityStatus.supported
-          : ArAvailabilityStatus.needsInstall;
+      // Avoid calling checkIsArCoreInstalled() from the legacy plugin path.
+      // On newer Android versions this can trigger install-activity failures.
+      _status = ArAvailabilityStatus.supported;
       return _status;
     } catch (_) {
       _status = ArAvailabilityStatus.error;

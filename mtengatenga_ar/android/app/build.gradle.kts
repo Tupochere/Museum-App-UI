@@ -7,6 +7,9 @@ plugins {
 
 configurations.all {
     exclude(group = "com.android.support", module = "support-compat")
+    resolutionStrategy {
+        force("com.google.ar:core:1.53.0")
+    }
 }
 
 android {

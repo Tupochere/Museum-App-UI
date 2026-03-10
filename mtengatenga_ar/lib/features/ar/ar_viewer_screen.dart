@@ -54,12 +54,12 @@ class _ArViewerScreenState extends State<ArViewerScreen>
   String? _modelUrl;
 
   bool _hasHorizontalSurface = false;
-  int _horizontalSurfaceCount = 0;
   bool _isRefreshingNode = false;
   bool _canRenderArView = false;
   bool _usedCachedModel = false;
   String? _activeModelSource;
   double? _downloadProgress;
+  DateTime _lastNoSurfaceHintAt = DateTime.fromMillisecondsSinceEpoch(0);
 
   vector.Vector3? _placementPosition;
   vector.Vector4? _placementRotation;
@@ -231,7 +231,7 @@ class _ArViewerScreenState extends State<ArViewerScreen>
               onArCoreViewCreated: _onArCoreViewCreated,
               enableTapRecognizer: true,
               enablePlaneRenderer: true,
-              enableUpdateListener: true,
+              enableUpdateListener: false,
               debug: false,
             ),
           ),
@@ -529,7 +529,7 @@ class _ArViewerScreenState extends State<ArViewerScreen>
       case ArViewerState.detectingSurfaces:
         return _hasHorizontalSurface
             ? 'Tap surface to place model'
-            : 'Move camera to detect surfaces';
+            : 'Move camera slowly, then tap on a flat surface';
       case ArViewerState.modelLoading:
         return _loadingProgressText();
       case ArViewerState.modelPlaced:
@@ -544,48 +544,55 @@ class _ArViewerScreenState extends State<ArViewerScreen>
   }
 
   String get _surfaceStatusText {
-    if (_horizontalSurfaceCount <= 0) {
-      return 'No horizontal surface detected yet.';
+    if (!_hasHorizontalSurface) {
+      return 'No surface confirmed yet. White dots mean tracking is working. Point at a flat, textured area and tap to test placement.';
     }
-    if (_horizontalSurfaceCount == 1) {
-      return '1 horizontal surface detected.';
-    }
-    return '$_horizontalSurfaceCount horizontal surfaces detected.';
+    return 'Surface detected. Tap where you want to place the model.';
   }
 
   void _onArCoreViewCreated(ArCoreController controller) {
     _arController = controller;
     _arService.initializeSession(controller);
     controller.onError = _handleArError;
-    controller.onPlaneDetected = _handlePlaneDetected;
     controller.onPlaneTap = _handlePlaneTap;
 
     if (!mounted) return;
     setState(() => _viewerState = ArViewerState.detectingSurfaces);
   }
 
-  void _handlePlaneDetected(ArCorePlane plane) {
-    if (plane.type != ArCorePlaneType.HORIZONTAL_UPWARD_FACING) {
+  Future<void> _handlePlaneTap(List<ArCoreHitTestResult> hits) async {
+    if (_modelUrl == null) return;
+    if (_viewerState == ArViewerState.modelLoading) return;
+    if (hits.isEmpty) {
+      _showNoSurfaceHint();
       return;
     }
 
-    if (!mounted) return;
-
-    setState(() {
-      _hasHorizontalSurface = true;
-      _horizontalSurfaceCount = (_horizontalSurfaceCount + 1).clamp(1, 999);
-    });
-  }
-
-  Future<void> _handlePlaneTap(List<ArCoreHitTestResult> hits) async {
-    if (hits.isEmpty || _modelUrl == null) return;
-    if (_viewerState == ArViewerState.modelLoading) return;
+    if (!_hasHorizontalSurface && mounted) {
+      setState(() => _hasHorizontalSurface = true);
+    }
 
     final hit = hits.first;
     _placementPosition = hit.pose.translation.clone();
     _placementRotation = hit.pose.rotation.clone();
 
     await _placeModelAtCurrentPose(showLoadingState: true);
+  }
+
+  void _showNoSurfaceHint() {
+    final now = DateTime.now();
+    if (now.difference(_lastNoSurfaceHintAt) < const Duration(seconds: 2)) {
+      return;
+    }
+    _lastNoSurfaceHintAt = now;
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    messenger?.hideCurrentSnackBar();
+    messenger?.showSnackBar(
+      const SnackBar(
+        content: Text('No surface yet. Move slowly and tap a flat area.'),
+        duration: Duration(seconds: 2),
+      ),
+    );
   }
 
   Future<void> _placeModelAtCurrentPose({
@@ -744,6 +751,7 @@ class _ArViewerScreenState extends State<ArViewerScreen>
       _currentNode = null;
       _placementPosition = null;
       _placementRotation = null;
+      _hasHorizontalSurface = false;
       _modelScale = 0.35;
       _modelRotationY = 0.0;
       _viewerState = ArViewerState.detectingSurfaces;
