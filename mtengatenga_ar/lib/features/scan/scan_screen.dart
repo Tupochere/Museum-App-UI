@@ -1,17 +1,14 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 
 import '../../core/domain/entities/artifact.model.dart';
 import '../../core/domain/repositories/artifact_repository.dart';
 import '../../core/models/ui_models.dart';
-import '../../core/services/ar_service.dart';
-import '../../core/services/model_manager_service.dart';
 import '../../core/services/scan_history_service.dart';
 import '../../core/services/service_locator.dart';
 import '../../core/ui/states/state_view.dart';
+import '../../screens/artifact_viewer_screen.dart';
 import '../../theme/app_tokens.dart';
-import '../ar/ar_viewer_screen.dart';
 import '../artifact/artifact_details_screen.dart';
 import '../artifact/artifact_not_found_screen.dart';
 import 'scan_help_screen.dart';
@@ -36,9 +33,6 @@ class _ScanScreenState extends State<ScanScreen>
   bool _hasNavigatedToDetails = false;
   String? _lastScanError;
   String? _lastScannedValue;
-  final ArService _arService = ArService();
-  final ModelManagerService _modelManagerService = ModelManagerService();
-  ArAvailabilityStatus? _cachedArAvailability;
 
   IArtifactRepository? get _artifactRepository {
     final getIt = ServiceLocator.instance;
@@ -99,7 +93,7 @@ class _ScanScreenState extends State<ScanScreen>
             ),
           if (!permissionState)
             Positioned.fill(
-              child: Container(color: Colors.black.withOpacity(0.20)),
+              child: Container(color: Colors.black.withValues(alpha: 0.20)),
             ),
           SafeArea(
             child: Column(
@@ -307,14 +301,11 @@ class _ScanScreenState extends State<ScanScreen>
 
         if (!_hasNavigatedToDetails && mounted) {
           _hasNavigatedToDetails = true;
-          final shouldOpenArViewer = await _shouldOpenArViewer(artifact);
           if (!mounted) return;
           try {
             await Navigator.of(context).push(
               MaterialPageRoute(
-                builder: (_) => shouldOpenArViewer
-                    ? ArViewerScreen(artifact: artifact)
-                    : ArtifactDetailsScreen(artifact: artifact),
+                builder: (_) => ArtifactViewerScreen(artifactId: qrCode),
               ),
             );
           } catch (_) {
@@ -362,45 +353,17 @@ class _ScanScreenState extends State<ScanScreen>
     }
   }
 
-  Future<bool> _shouldOpenArViewer(Artifact artifact) async {
-    final modelUrl = artifact.model3dUrl?.trim();
-    if (modelUrl == null || modelUrl.isEmpty) {
-      return false;
-    }
-
-    if (!_modelManagerService.isSupportedSource(modelUrl)) {
-      return false;
-    }
-
-    final isAssetPath = modelUrl.startsWith('assets/');
-    if (!isAssetPath) {
-      final uri = Uri.tryParse(modelUrl);
-      final hasValidScheme =
-          uri != null && (uri.scheme == 'https' || uri.scheme == 'http');
-      if (!hasValidScheme) {
-        return false;
-      }
-    }
-
-    if (defaultTargetPlatform != TargetPlatform.android) {
-      return false;
-    }
-
-    try {
-      _cachedArAvailability ??= await _arService.checkAvailability();
-      return _cachedArAvailability == ArAvailabilityStatus.supported;
-    } catch (_) {
-      return false;
-    }
-  }
-
   String _friendlyError(Object error) {
     final text = error.toString();
-    if (text.contains('SUPABASE_URL')) return 'Missing SUPABASE_URL in .env';
-    if (text.contains('SUPABASE_ANON_KEY'))
+    if (text.contains('SUPABASE_URL')) {
+      return 'Missing SUPABASE_URL in .env';
+    }
+    if (text.contains('SUPABASE_ANON_KEY')) {
       return 'Missing SUPABASE_ANON_KEY in .env';
-    if (text.contains('not registered inside GetIt'))
+    }
+    if (text.contains('not registered inside GetIt')) {
       return 'Services not initialized';
+    }
     return text;
   }
 
@@ -861,7 +824,7 @@ class _OverlayCard extends StatelessWidget {
             width: 54,
             height: 54,
             decoration: BoxDecoration(
-              color: AppColors.primary.withOpacity(0.10),
+              color: AppColors.primary.withValues(alpha: 0.10),
               borderRadius: BorderRadius.circular(AppRadius.md),
             ),
             child: const Icon(Icons.museum_outlined, color: AppColors.primary),
