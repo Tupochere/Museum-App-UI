@@ -60,6 +60,7 @@ class _ArViewerScreenState extends State<ArViewerScreen>
   String? _activeModelSource;
   double? _downloadProgress;
   DateTime _lastNoSurfaceHintAt = DateTime.fromMillisecondsSinceEpoch(0);
+  bool _isControlsCollapsed = false;
 
   vector.Vector3? _placementPosition;
   vector.Vector4? _placementRotation;
@@ -303,6 +304,21 @@ class _ArViewerScreenState extends State<ArViewerScreen>
   }
 
   Widget _buildControlsOverlay() {
+    return AnimatedCrossFade(
+      firstChild: _buildExpandedControlsOverlay(),
+      secondChild: _buildCollapsedControlsOverlay(),
+      crossFadeState: _isControlsCollapsed
+          ? CrossFadeState.showSecond
+          : CrossFadeState.showFirst,
+      duration: const Duration(milliseconds: 220),
+      firstCurve: Curves.easeOutCubic,
+      secondCurve: Curves.easeInCubic,
+      sizeCurve: Curves.easeInOutCubic,
+      alignment: Alignment.bottomCenter,
+    );
+  }
+
+  Widget _buildExpandedControlsOverlay() {
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(AppSpacing.md),
@@ -315,15 +331,30 @@ class _ArViewerScreenState extends State<ArViewerScreen>
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            _statusText,
-            style: const TextStyle(
-              color: AppColors.textMain,
-              fontSize: 14,
-              fontWeight: FontWeight.w800,
-            ),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: Text(
+                  _statusText,
+                  style: const TextStyle(
+                    color: AppColors.textMain,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+              IconButton(
+                onPressed: () => _setControlsCollapsed(true),
+                tooltip: 'Minimize controls',
+                icon: const Icon(Icons.keyboard_arrow_down_rounded),
+                visualDensity: VisualDensity.compact,
+                splashRadius: 18,
+                color: AppColors.textMuted,
+              ),
+            ],
           ),
-          const SizedBox(height: 6),
+          const SizedBox(height: 2),
           Text(
             _surfaceStatusText,
             style: const TextStyle(
@@ -332,7 +363,7 @@ class _ArViewerScreenState extends State<ArViewerScreen>
               fontWeight: FontWeight.w700,
             ),
           ),
-          const SizedBox(height: 4),
+          const SizedBox(height: 6),
           Text(
             _modelSourceText(),
             style: const TextStyle(
@@ -343,16 +374,25 @@ class _ArViewerScreenState extends State<ArViewerScreen>
           ),
           if (_viewerState == ArViewerState.modelPlaced) ...[
             const SizedBox(height: 12),
+            const Text(
+              'Pinch to resize and twist to rotate. Use +/- for fine control.',
+              style: TextStyle(
+                color: AppColors.textMuted,
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 8),
             Row(
               children: [
                 _RoundIconButton(
                   icon: Icons.remove,
-                  onPressed: () => _adjustScale(-0.10),
+                  onPressed: () => _adjustScale(-0.05),
                 ),
                 const SizedBox(width: 8),
                 _RoundIconButton(
                   icon: Icons.add,
-                  onPressed: () => _adjustScale(0.10),
+                  onPressed: () => _adjustScale(0.05),
                 ),
                 const SizedBox(width: 12),
                 Text(
@@ -399,6 +439,54 @@ class _ArViewerScreenState extends State<ArViewerScreen>
         ],
       ),
     );
+  }
+
+  Widget _buildCollapsedControlsOverlay() {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(AppRadius.lg),
+        onTap: () => _setControlsCollapsed(false),
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(
+            horizontal: AppSpacing.md,
+            vertical: AppSpacing.xs,
+          ),
+          decoration: BoxDecoration(
+            color: const Color(0xD9FDFBF7),
+            borderRadius: BorderRadius.circular(AppRadius.lg),
+            border: Border.all(color: AppColors.surfaceBorder),
+          ),
+          child: const Row(
+            children: [
+              Icon(
+                Icons.keyboard_arrow_up_rounded,
+                color: AppColors.textMuted,
+              ),
+              SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  'Controls minimized. Tap to expand.',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: AppColors.textMuted,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _setControlsCollapsed(bool collapsed) {
+    if (_isControlsCollapsed == collapsed) return;
+    setState(() => _isControlsCollapsed = collapsed);
   }
 
   Widget _buildFallbackScaffold({
