@@ -1,0 +1,18 @@
+targets:
+  $default:
+    builders:
+      brick_offline_first_with_supabase_build|brick_aggregate_builder:
+        enabled: true
+      brick_offline_first_with_supabase_build|brick_adapters_builder:
+        enabled: true
+        generate_for:
+          include:
+            - lib/core/domain/entities/*.model.dart
+            - lib/brick/brick.g.dart
+            - lib/brick/db/schema.g.dart
+      brick_offline_first_with_supabase_build|brick_model_dictionary_builder:
+        enabled: true
+      brick_offline_first_with_supabase_build|brick_new_migration_builder:
+        enabled: true
+      brick_offline_first_with_supabase_build|brick_schema_builder:
+        enabled: true

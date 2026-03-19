@@ -1,7 +1,13 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
+
+import '../../core/domain/entities/artifact.model.dart';
+import '../../core/domain/repositories/artifact_repository.dart';
 import '../../core/models/ui_models.dart';
+import '../../core/services/scan_history_service.dart';
+import '../../core/services/service_locator.dart';
 import '../../core/ui/states/state_view.dart';
+import '../../screens/artifact_viewer_screen.dart';
 import '../../theme/app_tokens.dart';
 import '../artifact/artifact_details_screen.dart';
 import '../artifact/artifact_not_found_screen.dart';
@@ -15,26 +21,49 @@ class ScanScreen extends StatefulWidget {
   State<ScanScreen> createState() => _ScanScreenState();
 }
 
-class _ScanScreenState extends State<ScanScreen> with SingleTickerProviderStateMixin {
+class _ScanScreenState extends State<ScanScreen>
+    with SingleTickerProviderStateMixin {
   late final AnimationController _scanController;
-  Timer? _simulateFoundTimer;
+  late final MobileScannerController _cameraController;
+
   bool _flashOn = false;
   ScanViewState _state = ScanViewState.searching;
+  Artifact? _scannedArtifact;
+  bool _isProcessing = false;
+  bool _hasNavigatedToDetails = false;
+  String? _lastScanError;
+  String? _lastScannedValue;
 
-  static const _bgUrl =
-      'https://lh3.googleusercontent.com/aida-public/AB6AXuA-QdLXYVLcupowILko324Kow061FlJG19lwvli15SKT4z1k_2QOKiyYqmkAZBBu5ZXvkIxasMZdDQnOjnRW3AkuAw35MTJbv8KBEBBEBAAmRK84WHyNj_QgMJRyXB87UE2S_8sj9Frzrt01OcoKGDgQr-NxLe-xX-XpY-9adoOk44nx6-YZqIKb9QPBHTmtprFexVhdIVTN9L40p5Y_XJ9keomSVFMBLk2U-X2LF35RPVmX9FP4LhL6zDV6Ln1WJDW9tBZyh7J2TsX';
+  IArtifactRepository? get _artifactRepository {
+    final getIt = ServiceLocator.instance;
+    if (!getIt.isRegistered<IArtifactRepository>()) return null;
+    return getIt<IArtifactRepository>();
+  }
+
+  ScanHistoryService? get _scanHistoryService {
+    final getIt = ServiceLocator.instance;
+    if (!getIt.isRegistered<ScanHistoryService>()) return null;
+    return getIt<ScanHistoryService>();
+  }
 
   @override
   void initState() {
     super.initState();
-    _scanController = AnimationController(vsync: this, duration: const Duration(seconds: 3))..repeat();
-    _restartScanSimulation();
+    _scanController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 3),
+    )..repeat();
+    _cameraController = MobileScannerController(
+      detectionSpeed: DetectionSpeed.noDuplicates,
+      facing: CameraFacing.back,
+      torchEnabled: false,
+    );
   }
 
   @override
   void dispose() {
-    _simulateFoundTimer?.cancel();
     _scanController.dispose();
+    _cameraController.dispose();
     super.dispose();
   }
 
@@ -47,23 +76,32 @@ class _ScanScreenState extends State<ScanScreen> with SingleTickerProviderStateM
       backgroundColor: Colors.black,
       body: Stack(
         children: [
-          Positioned.fill(
-            child: Image.network(
-              _bgUrl,
-              fit: BoxFit.cover,
-              color: Colors.black.withOpacity(0.10),
-              colorBlendMode: BlendMode.darken,
+          if (!permissionState)
+            Positioned.fill(
+              child: MobileScanner(
+                controller: _cameraController,
+                onDetect: _handleBarcodeScan,
+                errorBuilder: (context, error, child) {
+                  return Center(
+                    child: Text(
+                      'Camera Error: ${error.errorCode}',
+                      style: const TextStyle(color: Colors.white),
+                    ),
+                  );
+                },
+              ),
             ),
-          ),
-          Positioned.fill(child: Container(color: Colors.black.withOpacity(0.10))),
+          if (!permissionState)
+            Positioned.fill(
+              child: Container(color: Colors.black.withValues(alpha: 0.20)),
+            ),
           SafeArea(
             child: Column(
               children: [
                 _TopArea(
                   flashOn: _flashOn,
                   onBack: () => Navigator.pop(context),
-                  onFlash: () => setState(() => _flashOn = !_flashOn),
-                  onLongPressTitle: _cycleUiStates,
+                  onFlash: _toggleFlash,
                 ),
                 Expanded(
                   child: Stack(
@@ -79,20 +117,31 @@ class _ScanScreenState extends State<ScanScreen> with SingleTickerProviderStateM
                           right: AppSpacing.lg,
                           child: PermissionPromptCard(
                             title: 'Camera Access Needed',
-                            message: 'Allow camera access so the app can recognize artifacts and AR triggers.',
+                            message:
+                                'Allow camera access so the app can recognize artifacts and AR triggers.',
                             actionLabel: 'Enable Camera',
-                            onAction: () => setState(() => _state = ScanViewState.searching),
+                            onAction: () async {
+                              await _cameraController.start();
+                              if (!mounted) return;
+                              setState(() => _state = ScanViewState.searching);
+                            },
                           ),
                         ),
-                      if (_state == ScanViewState.found)
+                      if (_state == ScanViewState.found &&
+                          _scannedArtifact != null)
                         Positioned(
                           left: AppSpacing.lg,
                           right: AppSpacing.lg,
                           bottom: h * 0.24,
                           child: _FoundCard(
+                            artifactName: _scannedArtifact!.name,
                             onView: () {
                               Navigator.of(context).push(
-                                MaterialPageRoute(builder: (_) => const ArtifactDetailsScreen()),
+                                MaterialPageRoute(
+                                  builder: (_) => ArtifactDetailsScreen(
+                                    artifact: _scannedArtifact!,
+                                  ),
+                                ),
                               );
                             },
                           ),
@@ -103,10 +152,14 @@ class _ScanScreenState extends State<ScanScreen> with SingleTickerProviderStateM
                           right: AppSpacing.lg,
                           bottom: h * 0.24,
                           child: _NoMatchCard(
-                            onRetry: _restartScanSimulation,
+                            onRetry: _restartScanning,
+                            scannedValue: _lastScannedValue,
                             onOpenFallback: () {
                               Navigator.of(context).push(
-                                MaterialPageRoute(builder: (_) => const ArtifactNotFoundScreen()),
+                                MaterialPageRoute(
+                                  builder: (_) =>
+                                      const ArtifactNotFoundScreen(),
+                                ),
                               );
                             },
                           ),
@@ -124,7 +177,9 @@ class _ScanScreenState extends State<ScanScreen> with SingleTickerProviderStateM
                 _BottomBar(
                   onHistory: () {
                     Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => const ScanHistoryScreen()),
+                      MaterialPageRoute(
+                        builder: (_) => const ScanHistoryScreen(),
+                      ),
                     );
                   },
                   onHelp: () {
@@ -146,34 +201,181 @@ class _ScanScreenState extends State<ScanScreen> with SingleTickerProviderStateM
       case ScanViewState.searching:
         return const _SearchingPill(key: ValueKey('searching'));
       case ScanViewState.found:
-        return const _StatusPill(icon: Icons.check_circle, label: 'ARTIFACT FOUND', color: Color(0xFF2E7D32));
-      case ScanViewState.error:
-        return _RetryPill(
-          label: 'SCAN FAILED',
-          onRetry: _restartScanSimulation,
+        return const _StatusPill(
+          icon: Icons.check_circle,
+          label: 'ARTIFACT FOUND',
+          color: Color(0xFF2E7D32),
         );
+      case ScanViewState.error:
+        return _RetryPill(label: 'SCAN FAILED', onRetry: _restartScanning);
       case ScanViewState.permissionDenied:
-        return const _StatusPill(icon: Icons.block, label: 'CAMERA OFF', color: Color(0xFFC62828));
+        return const _StatusPill(
+          icon: Icons.block,
+          label: 'CAMERA OFF',
+          color: Color(0xFFC62828),
+        );
       case ScanViewState.lowLight:
-        return const _StatusPill(icon: Icons.wb_incandescent_outlined, label: 'LOW LIGHT', color: Color(0xFFE2725B));
+        return const _StatusPill(
+          icon: Icons.wb_incandescent_outlined,
+          label: 'LOW LIGHT',
+          color: Color(0xFFE2725B),
+        );
       case ScanViewState.noMatch:
-        return _RetryPill(label: 'NO MATCH', onRetry: _restartScanSimulation);
+        return _RetryPill(label: 'NO MATCH', onRetry: _restartScanning);
     }
   }
 
-  void _restartScanSimulation() {
-    _simulateFoundTimer?.cancel();
-    setState(() => _state = ScanViewState.searching);
-    _simulateFoundTimer = Timer(const Duration(seconds: 2), () {
-      if (!mounted) return;
-      setState(() => _state = ScanViewState.found);
-    });
+  void _toggleFlash() {
+    setState(() => _flashOn = !_flashOn);
+    _cameraController.toggleTorch();
   }
 
-  void _cycleUiStates() {
+  void _restartScanning() {
     setState(() {
-      _state = ScanViewState.values[(_state.index + 1) % ScanViewState.values.length];
+      _state = ScanViewState.searching;
+      _scannedArtifact = null;
+      _isProcessing = false;
+      _hasNavigatedToDetails = false;
+      _lastScanError = null;
+      _lastScannedValue = null;
     });
+    _cameraController.start();
+  }
+
+  Future<void> _handleBarcodeScan(BarcodeCapture capture) async {
+    if (_isProcessing) return;
+
+    final qrCode = _extractQrValue(capture.barcodes);
+    if (qrCode == null) return;
+
+    debugPrint('QR detected: "$qrCode"');
+    _lastScannedValue = qrCode;
+
+    final repository = _artifactRepository;
+    if (repository == null) {
+      setState(() {
+        _lastScanError =
+            'Data layer not initialized. Restart app and verify .env.';
+        _state = ScanViewState.error;
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Data layer not initialized. Check .env SUPABASE_URL and SUPABASE_ANON_KEY.',
+            ),
+          ),
+        );
+      }
+      _isProcessing = false;
+      return;
+    }
+
+    _isProcessing = true;
+
+    try {
+      final artifact = await repository.getArtifactByQrCode(qrCode);
+
+      if (!mounted) return;
+
+      if (artifact != null) {
+        debugPrint(
+          'QR matched artifact: id=${artifact.id}, qr=${artifact.qrCode}, name=${artifact.name}',
+        );
+        setState(() {
+          _scannedArtifact = artifact;
+          _state = ScanViewState.found;
+        });
+
+        try {
+          await _scanHistoryService?.addScan(artifact);
+        } catch (_) {
+          // Keep scanning responsive even if history persistence fails.
+        }
+
+        try {
+          await _cameraController.stop();
+        } catch (_) {
+          // Camera stop failures should not block artifact navigation.
+        }
+
+        if (!_hasNavigatedToDetails && mounted) {
+          _hasNavigatedToDetails = true;
+          if (!mounted) return;
+          try {
+            await Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => ArtifactViewerScreen(artifactId: qrCode),
+              ),
+            );
+          } catch (_) {
+            // Navigation failure should gracefully resume scanner.
+          }
+          if (mounted) {
+            _restartScanning();
+          }
+        }
+      } else {
+        setState(() => _state = ScanViewState.noMatch);
+        if (mounted) {
+          final preview = qrCode.length > 80
+              ? '${qrCode.substring(0, 80)}...'
+              : qrCode;
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('No match for QR: $preview')));
+        }
+
+        Future.delayed(const Duration(seconds: 3), () {
+          if (mounted) _restartScanning();
+        });
+      }
+    } catch (error, stackTrace) {
+      debugPrint('Scan lookup failed for "$qrCode": $error');
+      debugPrintStack(stackTrace: stackTrace);
+
+      if (!mounted) return;
+
+      setState(() {
+        _lastScanError = _friendlyError(error);
+        _state = ScanViewState.error;
+      });
+
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Scan failed: $_lastScanError')));
+
+      Future.delayed(const Duration(seconds: 2), () {
+        if (mounted) _restartScanning();
+      });
+    } finally {
+      _isProcessing = false;
+    }
+  }
+
+  String _friendlyError(Object error) {
+    final text = error.toString();
+    if (text.contains('SUPABASE_URL')) {
+      return 'Missing SUPABASE_URL in .env';
+    }
+    if (text.contains('SUPABASE_ANON_KEY')) {
+      return 'Missing SUPABASE_ANON_KEY in .env';
+    }
+    if (text.contains('not registered inside GetIt')) {
+      return 'Services not initialized';
+    }
+    return text;
+  }
+
+  String? _extractQrValue(List<Barcode> barcodes) {
+    for (final barcode in barcodes) {
+      final raw = barcode.rawValue?.trim();
+      if (raw != null && raw.isNotEmpty) return raw;
+
+      final display = barcode.displayValue?.trim();
+      if (display != null && display.isNotEmpty) return display;
+    }
+    return null;
   }
 }
 
@@ -182,50 +384,61 @@ class _TopArea extends StatelessWidget {
     required this.flashOn,
     required this.onBack,
     required this.onFlash,
-    required this.onLongPressTitle,
   });
 
   final bool flashOn;
   final VoidCallback onBack;
   final VoidCallback onFlash;
-  final VoidCallback onLongPressTitle;
 
   @override
   Widget build(BuildContext context) {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.fromLTRB(AppSpacing.md, AppSpacing.sm, AppSpacing.md, 18),
+      padding: const EdgeInsets.fromLTRB(
+        AppSpacing.md,
+        AppSpacing.sm,
+        AppSpacing.md,
+        18,
+      ),
       child: Column(
         children: [
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               _CircleIconButton(icon: Icons.arrow_back, onTap: onBack),
-              _CircleIconButton(icon: flashOn ? Icons.flash_on : Icons.flash_off, onTap: onFlash),
+              _CircleIconButton(
+                icon: flashOn ? Icons.flash_on : Icons.flash_off,
+                onTap: onFlash,
+              ),
             ],
           ),
           const SizedBox(height: 18),
-          GestureDetector(
-            onLongPress: onLongPressTitle,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 14),
-              decoration: BoxDecoration(
-                color: const Color(0xD9FDFBF7),
-                borderRadius: BorderRadius.circular(18),
-              ),
-              child: const Column(
-                children: [
-                  Text(
-                    'Point camera at artifact',
-                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900, color: AppColors.textMain),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 14),
+            decoration: BoxDecoration(
+              color: const Color(0xD9FDFBF7),
+              borderRadius: BorderRadius.circular(18),
+            ),
+            child: const Column(
+              children: [
+                Text(
+                  'Point camera at QR code',
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w900,
+                    color: AppColors.textMain,
                   ),
-                  SizedBox(height: 6),
-                  Text(
-                    'Align the object within the frame',
-                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.textMuted),
+                ),
+                SizedBox(height: 6),
+                Text(
+                  'Align the code within the frame',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.textMuted,
                   ),
-                ],
-              ),
+                ),
+              ],
             ),
           ),
         ],
@@ -242,11 +455,20 @@ class _BottomBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(AppSpacing.lg, 12, AppSpacing.lg, AppSpacing.lg),
+      padding: const EdgeInsets.fromLTRB(
+        AppSpacing.lg,
+        12,
+        AppSpacing.lg,
+        AppSpacing.lg,
+      ),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          _ActionButton(label: 'History', icon: Icons.collections_outlined, onTap: onHistory),
+          _ActionButton(
+            label: 'History',
+            icon: Icons.collections_outlined,
+            onTap: onHistory,
+          ),
           _ActionButton(label: 'Help', icon: Icons.help_outline, onTap: onHelp),
         ],
       ),
@@ -340,10 +562,7 @@ class _ScanFrame extends StatelessWidget {
                   left: 0,
                   right: 0,
                   top: y,
-                  child: Container(
-                    height: 3,
-                    color: const Color(0xFFD4A017),
-                  ),
+                  child: Container(height: 3, color: const Color(0xFFD4A017)),
                 );
               },
             ),
@@ -361,13 +580,17 @@ class _SearchingPill extends StatefulWidget {
   State<_SearchingPill> createState() => _SearchingPillState();
 }
 
-class _SearchingPillState extends State<_SearchingPill> with SingleTickerProviderStateMixin {
+class _SearchingPillState extends State<_SearchingPill>
+    with SingleTickerProviderStateMixin {
   late final AnimationController _pulse;
 
   @override
   void initState() {
     super.initState();
-    _pulse = AnimationController(vsync: this, duration: const Duration(seconds: 1))..repeat(reverse: true);
+    _pulse = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 1),
+    )..repeat(reverse: true);
   }
 
   @override
@@ -387,12 +610,22 @@ class _SearchingPillState extends State<_SearchingPill> with SingleTickerProvide
             builder: (_, __) {
               return Opacity(
                 opacity: 0.30 + 0.70 * _pulse.value,
-                child: const Icon(Icons.circle, size: 10, color: Color(0xFFD4A017)),
+                child: const Icon(
+                  Icons.circle,
+                  size: 10,
+                  color: Color(0xFFD4A017),
+                ),
               );
             },
           ),
           const SizedBox(width: 10),
-          const Text('SEARCHING...', style: TextStyle(fontWeight: FontWeight.w900, color: AppColors.textMain)),
+          const Text(
+            'SEARCHING...',
+            style: TextStyle(
+              fontWeight: FontWeight.w900,
+              color: AppColors.textMain,
+            ),
+          ),
         ],
       ),
     );
@@ -418,7 +651,13 @@ class _StatusPill extends StatelessWidget {
         children: [
           Icon(icon, size: 16, color: color),
           const SizedBox(width: 10),
-          Text(label, style: const TextStyle(fontWeight: FontWeight.w900, color: AppColors.textMain)),
+          Text(
+            label,
+            style: const TextStyle(
+              fontWeight: FontWeight.w900,
+              color: AppColors.textMain,
+            ),
+          ),
         ],
       ),
     );
@@ -436,7 +675,13 @@ class _RetryPill extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Text(label, style: const TextStyle(fontWeight: FontWeight.w900, color: AppColors.textMain)),
+          Text(
+            label,
+            style: const TextStyle(
+              fontWeight: FontWeight.w900,
+              color: AppColors.textMain,
+            ),
+          ),
           const SizedBox(width: 10),
           TextButton(onPressed: onRetry, child: const Text('Retry')),
         ],
@@ -463,13 +708,15 @@ class _BasePill extends StatelessWidget {
 }
 
 class _FoundCard extends StatelessWidget {
-  const _FoundCard({required this.onView});
+  const _FoundCard({required this.artifactName, required this.onView});
+
+  final String artifactName;
   final VoidCallback onView;
 
   @override
   Widget build(BuildContext context) {
     return _OverlayCard(
-      title: 'Ngoni Shield',
+      title: artifactName,
       subtitle: 'Artifact detected and ready to open.',
       actionLabel: 'View',
       onAction: onView,
@@ -481,10 +728,12 @@ class _NoMatchCard extends StatelessWidget {
   const _NoMatchCard({
     required this.onRetry,
     required this.onOpenFallback,
+    this.scannedValue,
   });
 
   final VoidCallback onRetry;
   final VoidCallback onOpenFallback;
+  final String? scannedValue;
 
   @override
   Widget build(BuildContext context) {
@@ -498,8 +747,28 @@ class _NoMatchCard extends StatelessWidget {
         children: [
           const Text(
             'No matching artifact found',
-            style: TextStyle(fontSize: 14, fontWeight: FontWeight.w900, color: AppColors.textMain),
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w900,
+              color: AppColors.textMain,
+            ),
           ),
+          if (scannedValue != null && scannedValue!.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text(
+              scannedValue!.length > 60
+                  ? '${scannedValue!.substring(0, 60)}...'
+                  : scannedValue!,
+              style: const TextStyle(
+                fontSize: 11,
+                color: AppColors.textMuted,
+                fontWeight: FontWeight.w600,
+              ),
+              textAlign: TextAlign.center,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ],
           const SizedBox(height: 8),
           Row(
             children: [
@@ -513,7 +782,10 @@ class _NoMatchCard extends StatelessWidget {
               Expanded(
                 child: ElevatedButton(
                   onPressed: onOpenFallback,
-                  style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary, foregroundColor: Colors.white),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.primary,
+                    foregroundColor: Colors.white,
+                  ),
                   child: const Text('Need Help'),
                 ),
               ),
@@ -552,7 +824,7 @@ class _OverlayCard extends StatelessWidget {
             width: 54,
             height: 54,
             decoration: BoxDecoration(
-              color: AppColors.primary.withOpacity(0.10),
+              color: AppColors.primary.withValues(alpha: 0.10),
               borderRadius: BorderRadius.circular(AppRadius.md),
             ),
             child: const Icon(Icons.museum_outlined, color: AppColors.primary),
@@ -562,15 +834,30 @@ class _OverlayCard extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(title, style: const TextStyle(fontWeight: FontWeight.w900, color: AppColors.textMain)),
+                Text(
+                  title,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w900,
+                    color: AppColors.textMain,
+                  ),
+                ),
                 const SizedBox(height: 4),
-                Text(subtitle, style: const TextStyle(fontSize: 12, color: AppColors.textMuted)),
+                Text(
+                  subtitle,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: AppColors.textMuted,
+                  ),
+                ),
               ],
             ),
           ),
           ElevatedButton(
             onPressed: onAction,
-            style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary, foregroundColor: Colors.white),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.primary,
+              foregroundColor: Colors.white,
+            ),
             child: Text(actionLabel),
           ),
         ],

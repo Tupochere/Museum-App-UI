@@ -1,22 +1,35 @@
-import '../data/repositories/artifact_repository_supabase.dart';
-import '../data/repositories/i_artifact_repository.dart';
+import 'package:get_it/get_it.dart';
+
+import '../../brick/config.dart';
+import '../data/repositories/artifact_repository_brick.dart';
+import '../data/repositories/room_repository_brick.dart';
+import '../domain/repositories/artifact_repository.dart';
+import '../domain/repositories/room_repository.dart';
+import 'scan_history_service.dart';
 import 'supabase_service.dart';
 
-/// Simple service locator for dependency injection
-/// Later you can replace this with Provider/Riverpod
 class ServiceLocator {
-  static final ServiceLocator _instance = ServiceLocator._internal();
+  static final GetIt _getIt = GetIt.instance;
 
-  factory ServiceLocator() => _instance;
+  static GetIt get instance => _getIt;
 
-  ServiceLocator._internal();
+  static Future<void> setup() async {
+    if (_getIt.isRegistered<SupabaseService>()) return;
 
-  late final SupabaseService supabaseService;
-  late final IArtifactRepository artifactRepository;
+    final supabaseService = SupabaseService();
+    await supabaseService.initialize();
+    _getIt.registerSingleton<SupabaseService>(supabaseService);
 
-  /// Initialize all services (call once in main.dart)
-  void init() {
-    supabaseService = SupabaseService();
-    artifactRepository = ArtifactRepositorySupabase(supabaseService);
+    await BrickConfig.initialize();
+
+    _getIt.registerLazySingleton<IArtifactRepository>(
+      ArtifactRepositoryBrick.new,
+    );
+    _getIt.registerLazySingleton<IRoomRepository>(
+      RoomRepositoryBrick.new,
+    );
+    _getIt.registerLazySingleton<ScanHistoryService>(
+      ScanHistoryService.new,
+    );
   }
 }

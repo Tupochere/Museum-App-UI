@@ -1,5 +1,6 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'core/services/service_locator.dart';
 import 'core/ui/shell/app_shell.dart';
@@ -7,17 +8,18 @@ import 'theme/app_theme.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-
-  await dotenv.load(fileName: ".env");
-
-  await Supabase.initialize(
-    url: dotenv.env['SUPABASE_URL']!,
-    anonKey: dotenv.env['SUPABASE_ANON_KEY']!,
-  );
-
-  ServiceLocator().init();
-
+  await _bootstrapServices();
   runApp(const MtengatengaApp());
+}
+
+Future<void> _bootstrapServices() async {
+  try {
+    await dotenv.load(fileName: '.env');
+    await ServiceLocator.setup().timeout(const Duration(seconds: 20));
+  } catch (error, stackTrace) {
+    debugPrint('Service bootstrap failed: $error');
+    debugPrintStack(stackTrace: stackTrace);
+  }
 }
 
 class MtengatengaApp extends StatelessWidget {
