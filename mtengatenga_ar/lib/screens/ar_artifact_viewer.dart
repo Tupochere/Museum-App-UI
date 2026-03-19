@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'dart:math' as math;
+
 import 'package:arcore_flutter_plugin/arcore_flutter_plugin.dart';
 import 'package:flutter/material.dart';
 import 'package:vector_math/vector_math_64.dart' as vector;
@@ -6,6 +9,8 @@ import '../core/services/model_manager_service.dart';
 import '../models/artifact.dart';
 import '../theme/app_tokens.dart';
 import 'model_3d_viewer.dart';
+
+enum PlaneReadiness { scanning, candidate, locked }
 
 class ArArtifactViewer extends StatefulWidget {
   const ArArtifactViewer({super.key, required this.artifact});
@@ -18,17 +23,35 @@ class ArArtifactViewer extends StatefulWidget {
 
 class _ArArtifactViewerState extends State<ArArtifactViewer> {
   static const String _nodeName = 'artifact_ar_node';
+  static const double _minPlaneExtentMeters = 0.22;
+  static const double _minPlaneAreaMeters2 = 0.06;
+  static const int _requiredStableDetections = 8;
+  static const Duration _planeStaleTimeout = Duration(seconds: 2);
+  static const Duration _trackingPollInterval = Duration(milliseconds: 450);
+  static const double _minPlacementDistanceMeters = 0.20;
+  static const double _maxPlacementDistanceMeters = 3.00;
+  static const String _trackingStateTracking = 'TRACKING';
+  static const String _trackingStatePaused = 'PAUSED';
 
   final ModelManagerService _modelManagerService = ModelManagerService();
 
   ArCoreController? _controller;
   ArCoreReferenceNode? _placedNode;
+  Timer? _trackingPollTimer;
 
   String? _preparedModelUri;
   String? _errorMessage;
   bool _isPreparingModel = true;
   bool _isPlacingModel = false;
   bool _isModelPlaced = false;
+  bool _isTrackingPollInFlight = false;
+
+  PlaneReadiness _planeReadiness = PlaneReadiness.scanning;
+  int _stablePlaneDetections = 0;
+  double _bestPlaneArea = 0.0;
+  DateTime _lastPlaneDetectedAt = DateTime.fromMillisecondsSinceEpoch(0);
+  String _trackingState = _trackingStatePaused;
+  bool _hasShownLockedMessage = false;
 
   @override
   void initState() {
@@ -39,6 +62,7 @@ class _ArArtifactViewerState extends State<ArArtifactViewer> {
 
   @override
   void dispose() {
+    _stopTrackingPolling();
     _controller?.dispose();
     super.dispose();
   }
@@ -104,6 +128,7 @@ class _ArArtifactViewerState extends State<ArArtifactViewer> {
               onArCoreViewCreated: _onArCoreViewCreated,
               enablePlaneRenderer: true,
               enableTapRecognizer: true,
+              enableUpdateListener: true,
             ),
           ),
           SafeArea(
@@ -156,7 +181,7 @@ class _ArArtifactViewerState extends State<ArArtifactViewer> {
                     child: Text(
                       _isModelPlaced
                           ? 'Model placed. Tap another plane area to reposition.'
-                          : 'Move your phone slowly and tap a detected flat surface to place the artifact.',
+                          : _scanStatusText,
                       style: const TextStyle(
                         color: AppColors.textMuted,
                         fontSize: 12,
@@ -278,15 +303,46 @@ class _ArArtifactViewerState extends State<ArArtifactViewer> {
   void _onArCoreViewCreated(ArCoreController controller) {
     _controller = controller;
     controller.onPlaneTap = _onPlaneTap;
+    controller.onPlaneDetected = _onPlaneDetected;
     controller.onError = _onArError;
+    _resetSurfaceDetectionState(clearBestPlaneArea: true);
+    _startTrackingPolling();
   }
 
   Future<void> _onPlaneTap(List<ArCoreHitTestResult> hits) async {
     if (_isPlacingModel) return;
+    if (_planeReadiness != PlaneReadiness.locked) {
+      debugPrint('Placement blocked: surface is not locked yet.');
+      _showMessage('Keep scanning until surface locks.');
+      return;
+    }
+    if (_trackingState != _trackingStateTracking) {
+      debugPrint('Placement blocked: tracking state=$_trackingState');
+      _showMessage('Move phone slowly to regain tracking.');
+      return;
+    }
     if (hits.isEmpty) {
       _showMessage('No plane detected yet. Move phone and try again.');
       return;
     }
+
+    final validHits = hits
+        .where(
+          (hit) =>
+              hit.distance >= _minPlacementDistanceMeters &&
+              hit.distance <= _maxPlacementDistanceMeters,
+        )
+        .toList(growable: false);
+
+    if (validHits.isEmpty) {
+      debugPrint('Placement blocked: no hits within allowed distance range.');
+      _showMessage(
+        'Move slightly closer or farther, then tap again on the same surface.',
+      );
+      return;
+    }
+
+    validHits.sort((a, b) => a.distance.compareTo(b.distance));
 
     final controller = _controller;
     final modelUri = _preparedModelUri;
@@ -304,7 +360,7 @@ class _ArArtifactViewerState extends State<ArArtifactViewer> {
     }
 
     try {
-      final hit = hits.first;
+      final hit = validHits.first;
       final node = ArCoreReferenceNode(
         name: _nodeName,
         objectUrl: modelUri,
@@ -317,7 +373,10 @@ class _ArArtifactViewerState extends State<ArArtifactViewer> {
       await controller.addArCoreNodeWithAnchor(node);
 
       if (!mounted) return;
-      setState(() => _isModelPlaced = true);
+      setState(() {
+        _isModelPlaced = true;
+        _planeReadiness = PlaneReadiness.locked;
+      });
       _showMessage('Model placed successfully.');
     } catch (error, stackTrace) {
       debugPrint('AR placement failed: $error');
@@ -332,9 +391,13 @@ class _ArArtifactViewerState extends State<ArArtifactViewer> {
 
   void _onArError(String message) {
     debugPrint('ArCoreView error: $message');
+    _stopTrackingPolling();
     if (!mounted) return;
     setState(() {
       _errorMessage = message;
+      _planeReadiness = PlaneReadiness.scanning;
+      _stablePlaneDetections = 0;
+      _hasShownLockedMessage = false;
     });
   }
 
@@ -351,6 +414,163 @@ class _ArArtifactViewerState extends State<ArArtifactViewer> {
     final messenger = ScaffoldMessenger.maybeOf(context);
     messenger?.hideCurrentSnackBar();
     messenger?.showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  void _startTrackingPolling() {
+    _trackingPollTimer?.cancel();
+    _trackingPollTimer = Timer.periodic(_trackingPollInterval, (_) async {
+      if (_isTrackingPollInFlight || !mounted) return;
+      _isTrackingPollInFlight = true;
+      try {
+        final controller = _controller;
+        if (controller == null) return;
+
+        final rawResult = await controller.getTrackingState();
+        final nextTracking = _extractTrackingState(rawResult, controller);
+
+        if (nextTracking != _trackingState && mounted) {
+          debugPrint(
+            'Tracking state changed: $_trackingState -> $nextTracking',
+          );
+          setState(() => _trackingState = nextTracking);
+        }
+
+        _resetIfSurfaceIsStale();
+
+        if (nextTracking != _trackingStateTracking) {
+          _decreaseDetectionConfidence();
+        }
+      } catch (_) {
+        if (mounted && _trackingState != _trackingStatePaused) {
+          debugPrint(
+            'Tracking polling fallback: $_trackingState -> $_trackingStatePaused',
+          );
+          setState(() => _trackingState = _trackingStatePaused);
+          _decreaseDetectionConfidence();
+        }
+      } finally {
+        _isTrackingPollInFlight = false;
+      }
+    });
+  }
+
+  void _stopTrackingPolling() {
+    _trackingPollTimer?.cancel();
+    _trackingPollTimer = null;
+  }
+
+  String _extractTrackingState(dynamic rawResult, ArCoreController controller) {
+    final direct = rawResult?.toString().trim();
+    if (direct != null && direct.isNotEmpty) {
+      return direct;
+    }
+    final fallback = controller.trackingState.trim();
+    if (fallback.isNotEmpty) {
+      return fallback;
+    }
+    return _trackingStatePaused;
+  }
+
+  void _onPlaneDetected(ArCorePlane plane) {
+    if (!mounted || _isModelPlaced) return;
+    if (plane.type != ArCorePlaneType.HORIZONTAL_UPWARD_FACING) {
+      return;
+    }
+
+    final extendX = (plane.extendX ?? 0).abs();
+    final extendZ = (plane.extendZ ?? 0).abs();
+    final area = extendX * extendZ;
+
+    if (extendX < _minPlaneExtentMeters ||
+        extendZ < _minPlaneExtentMeters ||
+        area < _minPlaneAreaMeters2) {
+      return;
+    }
+
+    _lastPlaneDetectedAt = DateTime.now();
+    _bestPlaneArea = math.max(_bestPlaneArea, area);
+
+    if (_stablePlaneDetections < _requiredStableDetections) {
+      _stablePlaneDetections++;
+    }
+
+    _updatePlaneReadiness(showLockMessage: true);
+  }
+
+  void _resetIfSurfaceIsStale() {
+    if (_stablePlaneDetections == 0 || _isModelPlaced) return;
+    final elapsed = DateTime.now().difference(_lastPlaneDetectedAt);
+    if (elapsed <= _planeStaleTimeout) return;
+
+    debugPrint('Surface confidence reset: stale plane detections.');
+    _resetSurfaceDetectionState(clearBestPlaneArea: false);
+  }
+
+  void _decreaseDetectionConfidence() {
+    if (_stablePlaneDetections <= 0 || _isModelPlaced) return;
+
+    _stablePlaneDetections = math.max(0, _stablePlaneDetections - 1);
+    _updatePlaneReadiness(showLockMessage: false);
+  }
+
+  void _resetSurfaceDetectionState({required bool clearBestPlaneArea}) {
+    _stablePlaneDetections = 0;
+    _hasShownLockedMessage = false;
+    _lastPlaneDetectedAt = DateTime.fromMillisecondsSinceEpoch(0);
+    if (clearBestPlaneArea) {
+      _bestPlaneArea = 0.0;
+    }
+    _updatePlaneReadiness(showLockMessage: false);
+  }
+
+  void _updatePlaneReadiness({required bool showLockMessage}) {
+    final nextReadiness = _readinessFromDetections(_stablePlaneDetections);
+    if (!mounted) return;
+
+    if (nextReadiness != _planeReadiness) {
+      debugPrint('Plane readiness changed: $_planeReadiness -> $nextReadiness');
+      setState(() => _planeReadiness = nextReadiness);
+    } else {
+      setState(() {});
+    }
+
+    if (nextReadiness == PlaneReadiness.locked &&
+        showLockMessage &&
+        !_hasShownLockedMessage) {
+      _hasShownLockedMessage = true;
+      _showMessage('Surface locked. Tap to place.');
+    }
+  }
+
+  PlaneReadiness _readinessFromDetections(int detections) {
+    if (detections >= _requiredStableDetections) {
+      return PlaneReadiness.locked;
+    }
+    if (detections <= 0) {
+      return PlaneReadiness.scanning;
+    }
+    return PlaneReadiness.candidate;
+  }
+
+  double get _confidenceRatio {
+    final ratio = _stablePlaneDetections / _requiredStableDetections;
+    return ratio.clamp(0.0, 1.0);
+  }
+
+  String get _scanStatusText {
+    if (_trackingState != _trackingStateTracking) {
+      return 'Tracking limited. Move phone slowly over textured area.';
+    }
+
+    switch (_planeReadiness) {
+      case PlaneReadiness.scanning:
+        return 'Scanning for a flat surface...';
+      case PlaneReadiness.candidate:
+        final pct = (_confidenceRatio * 100).toStringAsFixed(0);
+        return 'Stabilizing surface... $pct%';
+      case PlaneReadiness.locked:
+        return 'Surface locked. Tap to place model.';
+    }
   }
 }
 
