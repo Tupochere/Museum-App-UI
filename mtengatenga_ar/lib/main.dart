@@ -2,7 +2,6 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
-
 import 'core/services/service_locator.dart';
 import 'core/ui/shell/app_shell.dart';
 import 'theme/app_theme.dart';
