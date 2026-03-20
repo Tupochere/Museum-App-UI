@@ -5,8 +5,11 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_tts/flutter_tts.dart';
+import 'package:just_audio/just_audio.dart';
+import 'package:path_provider/path_provider.dart';
 import '../../core/domain/entities/artifact.model.dart';
 import '../../services/gemini_service.dart';
+import '../../services/gemini_tts_service.dart';
 import '../../services/supabase_service.dart';
 import '../../theme/app_tokens.dart';
 import '../map/indoor_navigation_screen.dart';
@@ -184,8 +187,12 @@ class _AiGuideScreenState extends State<AiGuideScreen>
     with TickerProviderStateMixin {
   // ── Services ──────────────────────────────────────────────────────────────
   final _geminiService = GeminiService();
+  final _geminiTtsService = GeminiTtsService();
   final _supabaseService = SupabaseService();
   late final FlutterTts _tts;
+  late final AudioPlayer _speechPlayer;
+  StreamSubscription<PlayerState>? _speechPlayerSub;
+  String? _speechTempPath;
 
   // ── Conversation ──────────────────────────────────────────────────────────
   final _conversationHistory = <Map<String, String>>[];
@@ -345,6 +352,13 @@ class _AiGuideScreenState extends State<AiGuideScreen>
         unawaited(_handleTtsCompleted());
       }
     });
+    _speechPlayer = AudioPlayer();
+    _speechPlayerSub = _speechPlayer.playerStateStream.listen((state) {
+      if (!mounted || !_ttsCompletionArmed) return;
+      if (state.processingState == ProcessingState.completed) {
+        unawaited(_handleTtsCompleted());
+      }
+    });
 
     _checkConnectivity();
     _connectivitySub = Connectivity().onConnectivityChanged.listen((result) {
@@ -380,7 +394,17 @@ class _AiGuideScreenState extends State<AiGuideScreen>
     _responseScrollCtrl.dispose();
     _wordTimer?.cancel();
     _connectivitySub?.cancel();
+    _speechPlayerSub?.cancel();
+    unawaited(_speechPlayer.stop());
+    unawaited(_speechPlayer.dispose());
     _tts.stop();
+    if (_speechTempPath != null) {
+      try {
+        File(_speechTempPath!).deleteSync();
+      } catch (_) {
+        // Ignore temp cleanup failures during dispose.
+      }
+    }
     super.dispose();
   }
 
@@ -423,8 +447,53 @@ class _AiGuideScreenState extends State<AiGuideScreen>
     await _settleToWaitingState();
   }
 
+  Future<File> _persistSpeechAudio(Uint8List wavBytes) async {
+    if (_speechTempPath != null) {
+      try {
+        await File(_speechTempPath!).delete();
+      } catch (_) {
+        // Ignore temp cleanup failures and replace the file path below.
+      }
+    }
+
+    final tempDir = await getTemporaryDirectory();
+    final file = File(
+      '${tempDir.path}${Platform.pathSeparator}'
+      'mtengatenga_voice_${DateTime.now().millisecondsSinceEpoch}.wav',
+    );
+    await file.writeAsBytes(wavBytes, flush: true);
+    _speechTempPath = file.path;
+    return file;
+  }
+
+  Future<void> _playGeminiSpeech(String text) async {
+    final wavBytes = await _geminiTtsService.synthesizeSpeech(text);
+    if (!_ttsCompletionArmed ||
+        !mounted ||
+        _mode != _AiMode.voice ||
+        _voiceState != _VoiceState.speaking) {
+      return;
+    }
+
+    final audioFile = await _persistSpeechAudio(wavBytes);
+    if (!_ttsCompletionArmed ||
+        !mounted ||
+        _mode != _AiMode.voice ||
+        _voiceState != _VoiceState.speaking) {
+      return;
+    }
+
+    await _speechPlayer.setFilePath(audioFile.path);
+    await _speechPlayer.play();
+  }
+
   Future<void> _stopTtsPlayback() async {
     _ttsCompletionArmed = false;
+    try {
+      await _speechPlayer.stop();
+    } catch (_) {
+      // Ignore audio player stop failures and continue resetting the UI.
+    }
     try {
       await _tts.stop();
     } catch (_) {
@@ -646,9 +715,23 @@ class _AiGuideScreenState extends State<AiGuideScreen>
 
     _ttsCompletionArmed = true;
     try {
-      await _tts.speak(text);
-    } catch (_) {
-      await _settleToWaitingState();
+      await _playGeminiSpeech(text);
+    } catch (e, st) {
+      debugPrint(
+        'Gemini voice playback failed, falling back to device TTS: $e',
+      );
+      debugPrintStack(stackTrace: st);
+      if (!_ttsCompletionArmed ||
+          !mounted ||
+          _mode != _AiMode.voice ||
+          _voiceState != _VoiceState.speaking) {
+        return;
+      }
+      try {
+        await _tts.speak(text);
+      } catch (_) {
+        await _settleToWaitingState();
+      }
     }
   }
 
