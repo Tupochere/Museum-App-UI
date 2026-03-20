@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
-import '../../core/domain/entities/artifact.dart';
+import '../../core/domain/entities/artifact.model.dart';
+import '../../core/domain/repositories/artifact_repository.dart';
 import '../../core/services/service_locator.dart';
 
 class DebugArtifactsScreen extends StatefulWidget {
@@ -23,7 +24,7 @@ class _DebugArtifactsScreenState extends State<DebugArtifactsScreen> {
 
   Future<void> _loadArtifacts() async {
     try {
-      final repo = ServiceLocator().artifactRepository;
+      final repo = ServiceLocator.instance<IArtifactRepository>();
       final artifacts = await repo.getAllArtifacts();
       if (!mounted) return;
       setState(() {

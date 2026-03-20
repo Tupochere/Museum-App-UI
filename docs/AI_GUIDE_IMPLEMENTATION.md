@@ -185,7 +185,7 @@ Get a free Gemini API key at: https://aistudio.google.com
 
 This service must:
 - Initialize Gemini with the API key from `.env` using `flutter_dotenv`
-- Use the `gemini-1.5-flash` model (free tier, fast)
+- Use a currently supported Gemini model such as `gemini-2.5-flash` (or make it configurable via `GEMINI_MODEL`)
 - Accept an `Artifact` object and user message as input
 - Return a streamed response string
 - Have a `generateTourNarration(Artifact artifact, String narrationContext)` method

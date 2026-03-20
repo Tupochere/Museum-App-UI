@@ -57,6 +57,9 @@ Future<Artifact> _$ArtifactFromSupabase(
     location: data['location'] == null ? null : data['location'] as String?,
     qrCode: data['qr_code'] == null ? null : data['qr_code'] as String?,
     isFeatured: data['is_featured'] as bool,
+    aiContext: data['ai_context'] == null
+        ? null
+        : data['ai_context'] as String?,
     updatedAt: DateTime.parse(data['updated_at'] as String),
   );
 }
@@ -98,6 +101,7 @@ Future<Map<String, dynamic>> _$ArtifactToSupabase(
     'location': instance.location,
     'qr_code': instance.qrCode,
     'is_featured': instance.isFeatured,
+    'ai_context': instance.aiContext,
     'updated_at': instance.updatedAt.toIso8601String(),
   };
 }
@@ -163,6 +167,9 @@ Future<Artifact> _$ArtifactFromSqlite(
     location: data['location'] == null ? null : data['location'] as String?,
     qrCode: data['qr_code'] == null ? null : data['qr_code'] as String?,
     isFeatured: data['is_featured'] == 1,
+    aiContext: data['ai_context'] == null
+        ? null
+        : data['ai_context'] as String?,
     updatedAt: DateTime.parse(data['updated_at'] as String),
   )..primaryKey = data['_brick_id'] as int;
 }
@@ -196,6 +203,7 @@ Future<Map<String, dynamic>> _$ArtifactToSqlite(
     'location': instance.location,
     'qr_code': instance.qrCode,
     'is_featured': instance.isFeatured ? 1 : 0,
+    'ai_context': instance.aiContext,
     'updated_at': instance.updatedAt.toIso8601String(),
   };
 }
@@ -291,6 +299,10 @@ class ArtifactAdapter extends OfflineFirstWithSupabaseAdapter<Artifact> {
     'isFeatured': const RuntimeSupabaseColumnDefinition(
       association: false,
       columnName: 'is_featured',
+    ),
+    'aiContext': const RuntimeSupabaseColumnDefinition(
+      association: false,
+      columnName: 'ai_context',
     ),
     'updatedAt': const RuntimeSupabaseColumnDefinition(
       association: false,
@@ -428,6 +440,12 @@ class ArtifactAdapter extends OfflineFirstWithSupabaseAdapter<Artifact> {
       columnName: 'is_featured',
       iterable: false,
       type: bool,
+    ),
+    'aiContext': const RuntimeSqliteColumnDefinition(
+      association: false,
+      columnName: 'ai_context',
+      iterable: false,
+      type: String,
     ),
     'updatedAt': const RuntimeSqliteColumnDefinition(
       association: false,

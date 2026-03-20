@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../core/domain/entities/artifact.model.dart';
+import '../../features/ai_guide/ai_guide_screen.dart';
 import '../../theme/app_tokens.dart';
 
 class ArtifactDetailsScreen extends StatefulWidget {
@@ -34,6 +35,21 @@ class _ArtifactDetailsScreenState extends State<ArtifactDetailsScreen> {
 
     return Scaffold(
       backgroundColor: Colors.black,
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: () => Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => AiGuideScreen(artifact: widget.artifact),
+          ),
+        ),
+        backgroundColor: AppColors.primary,
+        foregroundColor: Colors.white,
+        icon: const Icon(Icons.auto_awesome, size: 18),
+        label: const Text(
+          'Ask AI Guide',
+          style: TextStyle(fontWeight: FontWeight.w700, fontSize: 14),
+        ),
+      ),
       body: Stack(
         children: [
           // AR camera background

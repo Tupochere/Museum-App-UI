@@ -74,6 +74,10 @@ class Artifact extends OfflineFirstWithSupabaseModel {
   @Sqlite(name: 'is_featured')
   final bool isFeatured;
 
+  @Supabase(name: 'ai_context')
+  @Sqlite(name: 'ai_context')
+  final String? aiContext;
+
   @Supabase(name: 'updated_at')
   @Sqlite(name: 'updated_at')
   final DateTime updatedAt;
@@ -99,6 +103,7 @@ class Artifact extends OfflineFirstWithSupabaseModel {
     this.location,
     this.qrCode,
     this.isFeatured = false,
+    this.aiContext,
     required this.updatedAt,
   });
 }

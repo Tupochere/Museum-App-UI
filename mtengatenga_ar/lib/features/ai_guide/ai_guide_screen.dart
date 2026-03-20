@@ -1,8 +1,13 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:math';
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_tts/flutter_tts.dart';
+import '../../core/domain/entities/artifact.model.dart';
+import '../../services/gemini_service.dart';
+import '../../services/supabase_service.dart';
 import '../../theme/app_tokens.dart';
 import '../map/indoor_navigation_screen.dart';
 
@@ -48,40 +53,6 @@ class _PulseRing {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Mock data
-// ─────────────────────────────────────────────────────────────────────────────
-class _Mock {
-  static const suggestions = [
-    'Tell me about the Gule Wamkulu mask',
-    'What ceremonies used this artifact?',
-    'Guide me to the Hall of Ancestors',
-    'When was this piece created?',
-    'Explain Nyau traditions to me',
-  ];
-
-  static const responses = [
-    'The Gule Wamkulu mask before you represents the spirit Kasiya Maliro. '
-        'It was worn exclusively by initiated Nyau society members during funeral ceremonies '
-        'to guide the departed into the ancestral realm. This piece dates to the late 19th century.',
-    'This artifact was central to Chewa initiation rites. The Nyau society — '
-        'a secret brotherhood — used these masks to bridge the world of the living and the '
-        'ancestors. Only fully initiated men could wear them.',
-    'The Hall of Ancestors is on Level 2, East Wing — about a 3-minute walk from here. '
-        'It houses 43 artifacts spanning 300 years of Chewa heritage.',
-    'This piece was crafted between 1880 and 1910, during a period when Chewa craftsmen '
-        'were refining the symbolic vocabulary of Nyau masks.',
-    'Nyau is a secret society of the Chewa, Mang\'anja, and Tumbuka peoples. '
-        'UNESCO inscribed Gule Wamkulu as Intangible Cultural Heritage in 2005.',
-  ];
-
-  static const voiceResponse =
-      'The Gule Wamkulu mask you are standing in front of represents the '
-      'spirit Kasiya Maliro. It was used in funeral ceremonies to guide the '
-      'departed to the ancestral realm, and only initiated Nyau members could '
-      'wear it. Would you like to know more about the Nyau society?';
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Message model
 // ─────────────────────────────────────────────────────────────────────────────
 class _Msg {
@@ -102,7 +73,9 @@ double _sineNoise(int seed, double t) {
 // Main screen
 // ─────────────────────────────────────────────────────────────────────────────
 class AiGuideScreen extends StatefulWidget {
-  const AiGuideScreen({super.key});
+  const AiGuideScreen({super.key, this.artifact});
+
+  final Artifact? artifact;
 
   @override
   State<AiGuideScreen> createState() => _AiGuideScreenState();
@@ -110,6 +83,24 @@ class AiGuideScreen extends StatefulWidget {
 
 class _AiGuideScreenState extends State<AiGuideScreen>
     with TickerProviderStateMixin {
+  // ── Services ──────────────────────────────────────────────────────────────
+  final _geminiService = GeminiService();
+  final _supabaseService = SupabaseService();
+  late final FlutterTts _tts;
+
+  // ── Conversation ──────────────────────────────────────────────────────────
+  final _conversationHistory = <Map<String, String>>[];
+  bool _isTyping = false;
+
+  // ── Offline ────────────────────────────────────────────────────────────────
+  bool _isOffline = false;
+  StreamSubscription<ConnectivityResult>? _connectivitySub;
+
+  // ── Tour ──────────────────────────────────────────────────────────────────
+  List<Map<String, dynamic>> _tourStops = [];
+  int _currentTourStopIndex = 0;
+  String _currentTourName = '';
+
   // ── Mode ──────────────────────────────────────────────────────────────────
   _AiMode _mode = _AiMode.text;
   bool _tourMode = false;
@@ -117,7 +108,6 @@ class _AiGuideScreenState extends State<AiGuideScreen>
   // ── Text mode ─────────────────────────────────────────────────────────────
   final _messages = <_Msg>[];
   final _scrollCtrl = ScrollController();
-  int _responseIdx = 0;
 
   // ── Voice mode core ────────────────────────────────────────────────────────
   _VoiceState _voiceState = _VoiceState.idle;
@@ -224,6 +214,31 @@ class _AiGuideScreenState extends State<AiGuideScreen>
     );
 
     _timeCtrl.addListener(_onTimeTick);
+
+    _tts = FlutterTts();
+    _tts.setLanguage('en-US');
+    _tts.setSpeechRate(0.50);
+    _tts.setVolume(1.0);
+    _tts.setCompletionHandler(() {
+      if (mounted) _resetToIdle();
+    });
+
+    _checkConnectivity();
+    _connectivitySub = Connectivity()
+        .onConnectivityChanged
+        .listen((result) {
+      final offline = result == ConnectivityResult.none;
+      if (mounted && offline != _isOffline) {
+        setState(() => _isOffline = offline);
+      }
+    });
+  }
+
+  Future<void> _checkConnectivity() async {
+    final result = await Connectivity().checkConnectivity();
+    if (mounted) {
+      setState(() => _isOffline = result == ConnectivityResult.none);
+    }
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -243,6 +258,8 @@ class _AiGuideScreenState extends State<AiGuideScreen>
     _scrollCtrl.dispose();
     _responseScrollCtrl.dispose();
     _wordTimer?.cancel();
+    _connectivitySub?.cancel();
+    _tts.stop();
     super.dispose();
   }
 
@@ -485,12 +502,16 @@ class _AiGuideScreenState extends State<AiGuideScreen>
     await Future.delayed(const Duration(seconds: 2));
     if (!mounted || _voiceState != _VoiceState.listening) return;
     _onStateChanged(_VoiceState.thinking);
-    await Future.delayed(const Duration(milliseconds: 1100));
+
+    final prompt = widget.artifact != null
+        ? 'Give me a brief, engaging introduction to this artifact.'
+        : 'Welcome me to Mtengatenga Museum and give me a brief overview of what I can explore here.';
+
+    final response = await _geminiService.voiceQuery(widget.artifact, prompt);
+
     if (!mounted || _voiceState != _VoiceState.thinking) return;
-    await _enterSpeakingState(_Mock.voiceResponse);
-    await Future.delayed(const Duration(seconds: 8));
-    if (!mounted) return;
-    _resetToIdle();
+    await _enterSpeakingState(response);
+    _tts.speak(response);
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -498,27 +519,167 @@ class _AiGuideScreenState extends State<AiGuideScreen>
   // ─────────────────────────────────────────────────────────────────────────
   void _sendMessage(String text) {
     if (text.trim().isEmpty) return;
-    setState(() => _messages.add(_Msg(text: text.trim(), isUser: true)));
-    Future.delayed(const Duration(milliseconds: 850), () {
+    if (_isOffline) return;
+    final userText = text.trim();
+    setState(() {
+      _messages.add(_Msg(text: userText, isUser: true));
+      _isTyping = true;
+    });
+    _scrollToBottom();
+
+    _geminiService
+        .chatAboutArtifact(
+          widget.artifact ?? GeminiService.museumGuideArtifact,
+          userText,
+          List.from(_conversationHistory),
+        )
+        .then((response) {
       if (!mounted) return;
+      _conversationHistory.add({'role': 'user', 'content': userText});
+      _conversationHistory.add({'role': 'model', 'content': response});
+      if (_conversationHistory.length > 20) {
+        _conversationHistory.removeRange(0, 2);
+      }
       setState(() {
-        _messages.add(_Msg(
-          text: _Mock.responses[_responseIdx % _Mock.responses.length],
-          isUser: false,
-        ));
-        _responseIdx++;
+        _isTyping = false;
+        _messages.add(_Msg(text: response, isUser: false));
       });
-      Future.delayed(const Duration(milliseconds: 80), () {
-        if (_scrollCtrl.hasClients) {
-          _scrollCtrl.animateTo(
-            _scrollCtrl.position.maxScrollExtent,
-            duration: const Duration(milliseconds: 300),
-            curve: Curves.easeOut,
-          );
-        }
-      });
+      _scrollToBottom();
     });
   }
+
+  List<String> _buildSuggestions() {
+    final artifact = widget.artifact;
+    if (artifact == null) {
+      return const [
+        'What can I explore here?',
+        'Tell me about Chewa culture',
+        'Start a guided tour',
+        'What are the featured artifacts?',
+        'Explain Nyau traditions',
+      ];
+    }
+    final category = artifact.category?.toUpperCase() ?? '';
+    if (category.contains('MUSICAL')) {
+      return [
+        'How was the ${artifact.name} played?',
+        'What ceremonies used this instrument?',
+        'Tell me about its materials',
+        'When was this piece created?',
+        'How does it connect to Chewa spirituality?',
+      ];
+    }
+    if (category.contains('WEAPON') || category.contains('TOOL')) {
+      return [
+        'Who used the ${artifact.name}?',
+        'How was it made?',
+        'What was its purpose in ceremonies?',
+        'Tell me about its period: ${artifact.period ?? 'unknown'}',
+        'How does it compare to modern equivalents?',
+      ];
+    }
+    if (category.contains('POTTERY') || category.contains('CERAMIC')) {
+      return [
+        'How was this pottery made?',
+        'What was it used for?',
+        'Tell me about the patterns and symbols',
+        'Who made vessels like this?',
+        'What does it reveal about daily life?',
+      ];
+    }
+    return [
+      'Tell me about the ${artifact.name}',
+      'What ceremonies used this artifact?',
+      'When was this piece created?',
+      'What cultural significance does it hold?',
+      'Tell me more about ${artifact.period ?? 'this period'}',
+    ];
+  }
+
+  void _scrollToBottom() {
+    Future.delayed(const Duration(milliseconds: 80), () {
+      if (_scrollCtrl.hasClients) {
+        _scrollCtrl.animateTo(
+          _scrollCtrl.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+      }
+    });
+  }
+
+  Future<void> _showTourSelector() async {
+    final tours = await _supabaseService.getActiveTours();
+    if (!mounted) return;
+    if (tours.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No active tours available.')),
+      );
+      return;
+    }
+    if (tours.length == 1) {
+      await _loadTour(tours.first);
+      return;
+    }
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: AppColors.surfaceCard,
+      showDragHandle: true,
+      builder: (_) => Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Padding(
+            padding: EdgeInsets.fromLTRB(16, 0, 16, 12),
+            child: Text(
+              'Select a Tour',
+              style: TextStyle(
+                color: AppColors.textMain,
+                fontSize: 16,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+          for (final tour in tours)
+            ListTile(
+              leading: const Icon(Icons.route, color: AppColors.primary),
+              title: Text(
+                tour['name'] as String? ?? '',
+                style: const TextStyle(
+                    color: AppColors.textMain, fontWeight: FontWeight.w700),
+              ),
+              subtitle: Text(
+                '${tour['duration_minutes']} min  •  ${tour['difficulty']}',
+                style: const TextStyle(color: AppColors.textMuted, fontSize: 12),
+              ),
+              onTap: () {
+                Navigator.pop(context);
+                _loadTour(tour);
+              },
+            ),
+          const SizedBox(height: 16),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _loadTour(Map<String, dynamic> tour) async {
+    final stops = await _supabaseService.getTourStops(tour['id'] as String);
+    if (!mounted) return;
+    setState(() {
+      _tourMode = true;
+      _tourStops = stops;
+      _currentTourStopIndex = 0;
+      _currentTourName = tour['name'] as String? ?? '';
+    });
+    if (stops.isNotEmpty) {
+      final narration = stops.first['narration'] as String? ?? '';
+      if (narration.isNotEmpty) {
+        _sendMessage('Starting tour: $narration');
+      }
+    }
+  }
+
 
   // ─────────────────────────────────────────────────────────────────────────
   // Build
@@ -544,12 +705,73 @@ class _AiGuideScreenState extends State<AiGuideScreen>
     return Column(
       children: [
         _buildTopBar(),
+        if (_isOffline) _buildOfflineBanner(),
         if (_tourMode) _buildTourBanner(),
         Expanded(
           child: _messages.isEmpty ? _buildEmptyState() : _buildChat(),
         ),
-        _Composer(onSend: _sendMessage, onVoiceTap: _enterVoice),
+        if (_isTyping) _buildTypingIndicator(),
+        _Composer(
+          onSend: _isOffline ? (_) {} : _sendMessage,
+          onVoiceTap: _enterVoice,
+          disabled: _isOffline,
+        ),
       ],
+    );
+  }
+
+  Widget _buildOfflineBanner() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      color: const Color(0xFFFFF3CD),
+      child: const Row(
+        children: [
+          Icon(Icons.wifi_off, size: 14, color: Color(0xFF856404)),
+          SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Offline Mode — AI guide requires internet. Viewing cached content.',
+              style: TextStyle(
+                color: Color(0xFF856404),
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTypingIndicator() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: Row(
+          children: [
+            Container(
+              width: 22,
+              height: 22,
+              decoration: BoxDecoration(
+                color: AppColors.primary.withValues(alpha: 0.14),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(Icons.auto_awesome, color: AppColors.primary, size: 12),
+            ),
+            const SizedBox(width: 8),
+            const Text(
+              'Thinking…',
+              style: TextStyle(
+                color: AppColors.textMuted,
+                fontSize: 13,
+                fontStyle: FontStyle.italic,
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -586,7 +808,18 @@ class _AiGuideScreenState extends State<AiGuideScreen>
               ),
             ),
             GestureDetector(
-              onTap: () => setState(() => _tourMode = !_tourMode),
+              onTap: () {
+                if (_tourMode) {
+                  setState(() {
+                    _tourMode = false;
+                    _tourStops = [];
+                    _currentTourStopIndex = 0;
+                    _currentTourName = '';
+                  });
+                } else {
+                  _showTourSelector();
+                }
+              },
               child: Container(
                 width: 36,
                 height: 36,
@@ -628,6 +861,14 @@ class _AiGuideScreenState extends State<AiGuideScreen>
   }
 
   Widget _buildTourBanner() {
+    final hasStops = _tourStops.isNotEmpty;
+    final stepLabel = hasStops
+        ? 'Tour Mode  •  Step ${_currentTourStopIndex + 1} of ${_tourStops.length}'
+        : 'Tour Mode  •  Loading…';
+    final stopLabel = hasStops
+        ? (_tourStops[_currentTourStopIndex]['artifact_id'] as String? ?? '')
+        : _currentTourName;
+
     return Container(
       margin: const EdgeInsets.fromLTRB(16, 8, 16, 0),
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
@@ -640,18 +881,18 @@ class _AiGuideScreenState extends State<AiGuideScreen>
         children: [
           Icon(Icons.route, color: AppColors.primary, size: 16),
           const SizedBox(width: 8),
-          const Expanded(
+          Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('Tour Mode  •  Step 2 of 8',
-                    style: TextStyle(
+                Text(stepLabel,
+                    style: const TextStyle(
                         color: AppColors.primary,
                         fontSize: 12,
                         fontWeight: FontWeight.w700)),
-                Text('Hall of Ancestors',
-                    style:
-                        TextStyle(color: AppColors.textMuted, fontSize: 11)),
+                Text(stopLabel,
+                    style: const TextStyle(
+                        color: AppColors.textMuted, fontSize: 11)),
               ],
             ),
           ),
@@ -724,7 +965,7 @@ class _AiGuideScreenState extends State<AiGuideScreen>
           Wrap(
             spacing: 8,
             runSpacing: 8,
-            children: _Mock.suggestions
+            children: _buildSuggestions()
                 .map((s) => _SuggestionChip(
                     label: s, onTap: () => _sendMessage(s)))
                 .toList(),
@@ -1384,9 +1625,14 @@ class _SuggestionChip extends StatelessWidget {
 // Text composer (light theme)
 // ─────────────────────────────────────────────────────────────────────────────
 class _Composer extends StatefulWidget {
-  const _Composer({required this.onSend, required this.onVoiceTap});
+  const _Composer({
+    required this.onSend,
+    required this.onVoiceTap,
+    this.disabled = false,
+  });
   final ValueChanged<String> onSend;
   final VoidCallback onVoiceTap;
+  final bool disabled;
 
   @override
   State<_Composer> createState() => _ComposerState();
@@ -1440,14 +1686,17 @@ class _ComposerState extends State<_Composer> {
           children: [
             TextField(
               controller: _ctrl,
+              enabled: !widget.disabled,
               style: const TextStyle(color: AppColors.textMain, fontSize: 15),
               maxLines: 5,
               minLines: 1,
               onSubmitted: (_) => _submit(),
-              decoration: const InputDecoration(
-                hintText: 'Ask anything...',
+              decoration: InputDecoration(
+                hintText: widget.disabled
+                    ? 'AI guide requires internet connection'
+                    : 'Ask anything...',
                 hintStyle:
-                    TextStyle(color: AppColors.textMuted, fontSize: 15),
+                    const TextStyle(color: AppColors.textMuted, fontSize: 15),
                 border: InputBorder.none,
                 isDense: true,
                 contentPadding: EdgeInsets.zero,

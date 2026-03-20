@@ -7,7 +7,15 @@
       "mcp__mobile-mcp__mobile_launch_app",
       "Bash(cd:*)",
       "Bash(dart analyze:*)",
-      "Bash(gh pr:*)"
+      "Bash(gh pr:*)",
+      "Skill(update-config)",
+      "Bash(npm install:*)",
+      "Bash(where mcp-server-supabase:*)",
+      "Bash(npx @supabase/mcp-server-supabase --help)",
+      "mcp__supabase__execute_sql",
+      "mcp__supabase__apply_migration",
+      "Bash(flutter pub:*)",
+      "Bash(dart run:*)"
     ]
   },
   "enableAllProjectMcpServers": true,

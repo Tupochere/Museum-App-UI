@@ -7,6 +7,7 @@ class Artifact {
     this.qrCode,
     this.category,
     this.period,
+    this.aiContext,
   });
 
   final String id;
@@ -16,6 +17,7 @@ class Artifact {
   final String? qrCode;
   final String? category;
   final String? period;
+  final String? aiContext;
 
   factory Artifact.fromJson(Map<String, dynamic> json) {
     return Artifact(
@@ -30,6 +32,7 @@ class Artifact {
           _asNullableString(json['qrCode']),
       category: _asNullableString(json['category']),
       period: _asNullableString(json['period']),
+      aiContext: _asNullableString(json['ai_context']),
     );
   }
 
@@ -42,6 +45,7 @@ class Artifact {
       'qr_code': qrCode,
       'category': category,
       'period': period,
+      'ai_context': aiContext,
     };
   }
 
