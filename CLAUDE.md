@@ -95,6 +95,17 @@ There are two AR-related viewers. The entry point is `lib/features/ar/ar_viewer_
 
 Design tokens live in `lib/theme/app_tokens.dart` (`AppColors`, `AppSpacing`, `AppRadius`). Theme is configured in `lib/theme/app_theme.dart`. Custom font: Lexend (Regular/SemiBold/Bold).
 
+## Code Style
+
+When generating or modifying code, follow Object-Oriented principles as much as possible:
+- **Encapsulation** — keep state private; expose only what is needed via public interfaces
+- **Single Responsibility** — each class should have one clear purpose
+- **Abstraction** — depend on interfaces/abstract classes, not concrete implementations (repositories, services)
+- **Inheritance & Composition** — prefer composition over inheritance where appropriate
+- **Polymorphism** — use abstract base classes or interfaces to allow interchangeable implementations
+
+In practice: new logic belongs in a service or repository class, not inline in widgets. Widgets should delegate business logic to services via DI (`get_it`).
+
 ## Git Workflow
 
 - `main` — production only, no direct commits

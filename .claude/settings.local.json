@@ -6,7 +6,8 @@
       "mcp__mobile-mcp__mobile_list_available_devices",
       "mcp__mobile-mcp__mobile_launch_app",
       "Bash(cd:*)",
-      "Bash(dart analyze:*)"
+      "Bash(dart analyze:*)",
+      "Bash(gh pr:*)"
     ]
   },
   "enableAllProjectMcpServers": true,
