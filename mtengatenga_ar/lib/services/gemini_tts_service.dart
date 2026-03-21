@@ -5,14 +5,26 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 
+class GeminiSpeechClip {
+  final Uint8List wavBytes;
+  final Duration duration;
+
+  const GeminiSpeechClip({required this.wavBytes, required this.duration});
+}
+
 class GeminiTtsService {
   static const String _defaultModel = 'gemini-2.5-flash-preview-tts';
   static const String _defaultVoice = 'Sulafat';
   static const int _sampleRate = 24000;
   static const int _channels = 1;
   static const int _bitsPerSample = 16;
+  static const int _bytesPerSecond =
+      _sampleRate * _channels * _bitsPerSample ~/ 8;
 
-  Future<Uint8List> synthesizeSpeech(String text, {String? stylePrompt}) async {
+  Future<GeminiSpeechClip> synthesizeSpeech(
+    String text, {
+    String? stylePrompt,
+  }) async {
     final apiKey = dotenv.env['GEMINI_API_KEY']?.trim() ?? '';
     if (apiKey.isEmpty) {
       throw StateError('Missing GEMINI_API_KEY for Gemini TTS.');
@@ -64,7 +76,7 @@ class GeminiTtsService {
         );
       }
 
-      return _extractWaveBytes(body);
+      return _extractSpeechClip(body);
     } catch (e, st) {
       debugPrint('GeminiTtsService.synthesizeSpeech ERROR: $e');
       debugPrintStack(stackTrace: st);
@@ -119,7 +131,7 @@ class GeminiTtsService {
     return body;
   }
 
-  Uint8List _extractWaveBytes(String body) {
+  GeminiSpeechClip _extractSpeechClip(String body) {
     final decoded = jsonDecode(body);
     if (decoded is! Map<String, dynamic>) {
       throw const FormatException('Gemini TTS returned an invalid JSON body.');
@@ -151,7 +163,13 @@ class GeminiTtsService {
       if (inlineData is! Map<String, dynamic>) continue;
       final data = inlineData['data'];
       if (data is! String || data.isEmpty) continue;
-      return _wrapPcmAsWav(base64Decode(data));
+      final pcmBytes = base64Decode(data);
+      final durationMicros =
+          (pcmBytes.length * Duration.microsecondsPerSecond) ~/ _bytesPerSecond;
+      return GeminiSpeechClip(
+        wavBytes: _wrapPcmAsWav(pcmBytes),
+        duration: Duration(microseconds: durationMicros),
+      );
     }
 
     throw const FormatException('Gemini TTS returned no inline audio data.');

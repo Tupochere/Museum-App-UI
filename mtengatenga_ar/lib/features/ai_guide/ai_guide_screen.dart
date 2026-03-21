@@ -222,6 +222,7 @@ class _AiGuideScreenState extends State<AiGuideScreen>
   // ── Word streaming (Task 4) ────────────────────────────────────────────────
   List<String> _words = [];
   int _revealedWordCount = 0;
+  List<Duration> _wordRevealDelays = const [];
   Timer? _wordTimer;
   VoidCallback? _onWordStreamComplete;
   final ScrollController _responseScrollCtrl = ScrollController();
@@ -466,25 +467,28 @@ class _AiGuideScreenState extends State<AiGuideScreen>
     return file;
   }
 
-  Future<void> _playGeminiSpeech(String text) async {
-    final wavBytes = await _geminiTtsService.synthesizeSpeech(text);
+  Future<Duration> _prepareGeminiSpeechPlayback(String text) async {
+    final clip = await _geminiTtsService.synthesizeSpeech(text);
     if (!_ttsCompletionArmed ||
         !mounted ||
         _mode != _AiMode.voice ||
-        _voiceState != _VoiceState.speaking) {
-      return;
+        (_voiceState != _VoiceState.thinking &&
+            _voiceState != _VoiceState.speaking)) {
+      return Duration.zero;
     }
 
-    final audioFile = await _persistSpeechAudio(wavBytes);
+    final audioFile = await _persistSpeechAudio(clip.wavBytes);
     if (!_ttsCompletionArmed ||
         !mounted ||
         _mode != _AiMode.voice ||
-        _voiceState != _VoiceState.speaking) {
-      return;
+        (_voiceState != _VoiceState.thinking &&
+            _voiceState != _VoiceState.speaking)) {
+      return Duration.zero;
     }
 
+    await _speechPlayer.stop();
     await _speechPlayer.setFilePath(audioFile.path);
-    await _speechPlayer.play();
+    return clip.duration;
   }
 
   Future<void> _stopTtsPlayback() async {
@@ -521,6 +525,7 @@ class _AiGuideScreenState extends State<AiGuideScreen>
     setState(() {
       _words = [];
       _revealedWordCount = 0;
+      _wordRevealDelays = const [];
     });
     if (_responseScrollCtrl.hasClients) {
       _responseScrollCtrl.jumpTo(0);
@@ -543,6 +548,7 @@ class _AiGuideScreenState extends State<AiGuideScreen>
       _voiceState = _VoiceState.idle;
       _words = [];
       _revealedWordCount = 0;
+      _wordRevealDelays = const [];
       _thinkingDotsVisible = false;
       _isExiting = false;
     });
@@ -695,6 +701,25 @@ class _AiGuideScreenState extends State<AiGuideScreen>
   }
 
   Future<void> _enterSpeakingState(String text, {bool speakText = true}) async {
+    Duration? preparedSpeechDuration;
+    var useGeminiPlayback = false;
+
+    if (speakText) {
+      _ttsCompletionArmed = true;
+      try {
+        preparedSpeechDuration = await _prepareGeminiSpeechPlayback(text);
+        useGeminiPlayback = preparedSpeechDuration > Duration.zero;
+      } catch (e, st) {
+        debugPrint(
+          'Gemini voice preparation failed, falling back to device TTS: $e',
+        );
+        debugPrintStack(stackTrace: st);
+        useGeminiPlayback = false;
+      }
+    }
+
+    if (!mounted || _voiceState != _VoiceState.thinking) return;
+
     _onStateChanged(_VoiceState.speaking);
     await Future.delayed(const Duration(milliseconds: 560));
     if (!mounted || _voiceState != _VoiceState.speaking) return;
@@ -709,36 +734,85 @@ class _AiGuideScreenState extends State<AiGuideScreen>
                 unawaited(_settleToWaitingState());
               }
             },
+      targetDuration: useGeminiPlayback ? preparedSpeechDuration : null,
+      leadIn: useGeminiPlayback
+          ? const Duration(milliseconds: 40)
+          : const Duration(milliseconds: 80),
     );
 
     if (!speakText) return;
 
-    _ttsCompletionArmed = true;
-    try {
-      await _playGeminiSpeech(text);
-    } catch (e, st) {
-      debugPrint(
-        'Gemini voice playback failed, falling back to device TTS: $e',
-      );
-      debugPrintStack(stackTrace: st);
-      if (!_ttsCompletionArmed ||
-          !mounted ||
-          _mode != _AiMode.voice ||
-          _voiceState != _VoiceState.speaking) {
-        return;
-      }
+    if (!_ttsCompletionArmed ||
+        !mounted ||
+        _mode != _AiMode.voice ||
+        _voiceState != _VoiceState.speaking) {
+      return;
+    }
+
+    if (useGeminiPlayback) {
       try {
-        await _tts.speak(text);
+        await _speechPlayer.play();
       } catch (_) {
         await _settleToWaitingState();
       }
+      return;
+    }
+
+    try {
+      await _tts.speak(text);
+    } catch (_) {
+      await _settleToWaitingState();
     }
   }
 
   // ─────────────────────────────────────────────────────────────────────────
   // Task 4 — Word streaming
   // ─────────────────────────────────────────────────────────────────────────
-  void _streamWords(String fullText, {VoidCallback? onComplete}) {
+  List<Duration> _buildWordRevealDelays(
+    List<String> words, {
+    Duration? targetDuration,
+    Duration leadIn = const Duration(milliseconds: 80),
+  }) {
+    if (words.isEmpty) return const [];
+
+    final baseWeights = words.map((word) {
+      if (word.length <= 3) return 110;
+      if (word.length <= 6) return 160;
+      return 210;
+    }).toList();
+
+    if (targetDuration == null || targetDuration <= Duration.zero) {
+      return List<Duration>.generate(baseWeights.length, (index) {
+        final extraLeadIn = index == 0 ? leadIn.inMilliseconds : 0;
+        return Duration(milliseconds: baseWeights[index] + extraLeadIn);
+      });
+    }
+
+    final availableMs = max(
+      leadIn.inMilliseconds + 80,
+      targetDuration.inMilliseconds - 140,
+    ).toDouble();
+    final totalWeight = baseWeights.fold<double>(
+      0,
+      (sum, value) => sum + value,
+    );
+
+    return List<Duration>.generate(baseWeights.length, (index) {
+      final weightedDelay = max(
+        55.0,
+        availableMs * (baseWeights[index] / totalWeight),
+      );
+      final extraLeadIn = index == 0 ? leadIn.inMilliseconds : 0;
+      return Duration(milliseconds: weightedDelay.round() + extraLeadIn);
+    });
+  }
+
+  void _streamWords(
+    String fullText, {
+    VoidCallback? onComplete,
+    Duration? targetDuration,
+    Duration leadIn = const Duration(milliseconds: 80),
+  }) {
     final normalizedText = fullText.trim();
     _cancelWordStream();
 
@@ -748,9 +822,15 @@ class _AiGuideScreenState extends State<AiGuideScreen>
     }
 
     _onWordStreamComplete = onComplete;
+    final words = normalizedText.split(RegExp(r'\s+'));
     setState(() {
-      _words = normalizedText.split(RegExp(r'\s+'));
+      _words = words;
       _revealedWordCount = 0;
+      _wordRevealDelays = _buildWordRevealDelays(
+        words,
+        targetDuration: targetDuration,
+        leadIn: leadIn,
+      );
     });
     _scheduleNextWord();
   }
@@ -763,12 +843,9 @@ class _AiGuideScreenState extends State<AiGuideScreen>
       return;
     }
 
-    final word = _words[_revealedWordCount];
-    final delay = word.length <= 3
-        ? const Duration(milliseconds: 110)
-        : word.length <= 6
-        ? const Duration(milliseconds: 160)
-        : const Duration(milliseconds: 210);
+    final delay = _revealedWordCount < _wordRevealDelays.length
+        ? _wordRevealDelays[_revealedWordCount]
+        : const Duration(milliseconds: 150);
     _wordTimer = Timer(delay, () {
       if (!mounted) return;
       setState(() => _revealedWordCount++);
