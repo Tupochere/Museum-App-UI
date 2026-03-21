@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
@@ -14,12 +15,14 @@ class GeminiSpeechClip {
 
 class GeminiTtsService {
   static const String _defaultModel = 'gemini-2.5-flash-preview-tts';
+  static const String _fallbackModel = 'gemini-2.5-flash-lite-preview-tts';
   static const String _defaultVoice = 'Sulafat';
   static const int _sampleRate = 24000;
   static const int _channels = 1;
   static const int _bitsPerSample = 16;
   static const int _bytesPerSecond =
       _sampleRate * _channels * _bitsPerSample ~/ 8;
+  static const int _maxRetries = 2;
 
   Future<GeminiSpeechClip> synthesizeSpeech(
     String text, {
@@ -30,68 +33,153 @@ class GeminiTtsService {
       throw StateError('Missing GEMINI_API_KEY for Gemini TTS.');
     }
 
-    final model = _resolveModel();
     final prompt = _buildSpeechPrompt(text, stylePrompt: stylePrompt);
-    final client = HttpClient();
+    Object? lastError;
+    StackTrace? lastStackTrace;
 
-    try {
-      final request = await client.postUrl(
-        Uri.parse(
-          'https://generativelanguage.googleapis.com/v1beta/models/'
-          '$model:generateContent',
-        ),
-      );
-      request.headers.contentType = ContentType.json;
-      request.headers.set('x-goog-api-key', apiKey);
-      request.add(
-        utf8.encode(
-          jsonEncode({
-            'model': model,
-            'contents': [
-              {
-                'parts': [
-                  {'text': prompt},
+    for (final model in _resolveModelCandidates()) {
+      for (var attempt = 0; attempt <= _maxRetries; attempt++) {
+        final client = HttpClient();
+        try {
+          final request = await client.postUrl(
+            Uri.parse(
+              'https://generativelanguage.googleapis.com/v1beta/models/'
+              '$model:generateContent',
+            ),
+          );
+          request.headers.contentType = ContentType.json;
+          request.headers.set('x-goog-api-key', apiKey);
+          request.add(
+            utf8.encode(
+              jsonEncode({
+                'model': model,
+                'contents': [
+                  {
+                    'parts': [
+                      {'text': prompt},
+                    ],
+                  },
                 ],
-              },
-            ],
-            'generationConfig': {
-              'responseModalities': ['AUDIO'],
-              'speechConfig': {
-                'voiceConfig': {
-                  'prebuiltVoiceConfig': {'voiceName': _resolveVoice()},
+                'generationConfig': {
+                  'responseModalities': ['AUDIO'],
+                  'speechConfig': {
+                    'voiceConfig': {
+                      'prebuiltVoiceConfig': {'voiceName': _resolveVoice()},
+                    },
+                  },
                 },
-              },
-            },
-          }),
-        ),
-      );
+              }),
+            ),
+          );
 
-      final response = await request.close();
-      final body = await utf8.decoder.bind(response).join();
+          final response = await request.close();
+          final body = await utf8.decoder.bind(response).join();
 
-      if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw HttpException(
-          'Gemini TTS failed (${response.statusCode}): '
-          '${_extractErrorMessage(body)}',
-        );
+          if (response.statusCode == 429 ||
+              (response.statusCode >= 500 && response.statusCode < 600)) {
+            final errorMsg = _extractErrorMessage(body);
+            final error = HttpException(
+              'Gemini TTS failed (${response.statusCode}) on $model: $errorMsg',
+            );
+            if (attempt < _maxRetries) {
+              final delay = _retryDelay(errorMsg, attempt);
+              debugPrint(
+                'GeminiTtsService: rate limited on $model, '
+                'retrying in ${delay.inSeconds}s '
+                '(attempt ${attempt + 1}/$_maxRetries)',
+              );
+              await Future.delayed(delay);
+              continue;
+            }
+            throw error;
+          }
+
+          if (response.statusCode < 200 || response.statusCode >= 300) {
+            throw HttpException(
+              'Gemini TTS failed (${response.statusCode}) on $model: '
+              '${_extractErrorMessage(body)}',
+            );
+          }
+
+          return _extractSpeechClip(body);
+        } catch (e, st) {
+          lastError = e;
+          lastStackTrace = st;
+
+          // Retry quota/rate-limit errors on the same model before moving on.
+          if (attempt < _maxRetries && _isQuotaError(e)) {
+            final delay = _retryDelay(e.toString(), attempt);
+            debugPrint(
+              'GeminiTtsService: quota exceeded on $model, '
+              'retrying in ${delay.inSeconds}s '
+              '(attempt ${attempt + 1}/$_maxRetries)',
+            );
+            await Future.delayed(delay);
+            continue;
+          }
+
+          debugPrint(
+            'GeminiTtsService.synthesizeSpeech ERROR on model $model: $e',
+          );
+          debugPrintStack(stackTrace: st);
+          break; // Move to next model candidate.
+        } finally {
+          client.close(force: true);
+        }
       }
-
-      return _extractSpeechClip(body);
-    } catch (e, st) {
-      debugPrint('GeminiTtsService.synthesizeSpeech ERROR: $e');
-      debugPrintStack(stackTrace: st);
-      rethrow;
-    } finally {
-      client.close(force: true);
     }
+
+    if (lastError != null && lastStackTrace != null) {
+      Error.throwWithStackTrace(lastError, lastStackTrace);
+    }
+
+    throw StateError('Gemini TTS failed before any model attempt completed.');
   }
 
-  String _resolveModel() {
-    final configured = dotenv.env['GEMINI_TTS_MODEL']?.trim();
-    if (configured == null || configured.isEmpty) {
-      return _defaultModel;
+  // ── Retry helpers ────────────────────────────────────────────────────────
+
+  static bool _isQuotaError(Object error) {
+    final message = error.toString().toLowerCase();
+    return message.contains('quota') ||
+        message.contains('rate limit') ||
+        message.contains('resource has been exhausted') ||
+        message.contains('429');
+  }
+
+  static Duration _retryDelay(String context, int attempt) {
+    final match =
+        RegExp(r'retry\s+in\s+([\d.]+)s', caseSensitive: false)
+            .firstMatch(context);
+    if (match != null) {
+      final seconds = double.tryParse(match.group(1)!);
+      if (seconds != null && seconds > 0 && seconds < 120) {
+        final jitterMs = Random().nextInt(500);
+        return Duration(
+          milliseconds: (seconds * 1000).ceil() + jitterMs,
+        );
+      }
     }
-    return configured.replaceFirst(RegExp(r'^models/'), '');
+    // Exponential backoff: 3s, 6s, 12s …
+    final baseMs = 3000 * pow(2, attempt).toInt();
+    final jitterMs = Random().nextInt(1000);
+    return Duration(milliseconds: baseMs + jitterMs);
+  }
+
+  // ── Config helpers ───────────────────────────────────────────────────────
+
+  List<String> _resolveModelCandidates() {
+    final configured = dotenv.env['GEMINI_TTS_MODEL']?.trim();
+    final models = <String>[];
+    if (configured != null && configured.isNotEmpty) {
+      models.add(configured.replaceFirst(RegExp(r'^models/'), ''));
+    }
+    if (!models.contains(_defaultModel)) {
+      models.add(_defaultModel);
+    }
+    if (!models.contains(_fallbackModel)) {
+      models.add(_fallbackModel);
+    }
+    return models;
   }
 
   String _resolveVoice() {

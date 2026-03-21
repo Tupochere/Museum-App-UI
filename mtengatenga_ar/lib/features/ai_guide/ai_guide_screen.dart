@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:io';
 import 'dart:math';
 import 'package:connectivity_plus/connectivity_plus.dart';
@@ -7,6 +8,9 @@ import 'package:flutter/services.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:speech_to_text/speech_recognition_error.dart';
+import 'package:speech_to_text/speech_recognition_result.dart';
+import 'package:speech_to_text/speech_to_text.dart' as stt;
 import '../../core/domain/entities/artifact.model.dart';
 import '../../services/gemini_service.dart';
 import '../../services/gemini_tts_service.dart';
@@ -163,6 +167,18 @@ class _Msg {
   const _Msg({required this.text, required this.isUser});
 }
 
+class _SpeechChunk {
+  final String text;
+  final Duration duration;
+  final String audioPath;
+
+  const _SpeechChunk({
+    required this.text,
+    required this.duration,
+    required this.audioPath,
+  });
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Top-level pseudo-noise helper (Task 2b)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -191,8 +207,13 @@ class _AiGuideScreenState extends State<AiGuideScreen>
   final _supabaseService = SupabaseService();
   late final FlutterTts _tts;
   late final AudioPlayer _speechPlayer;
+  late final stt.SpeechToText _speechToText;
   StreamSubscription<PlayerState>? _speechPlayerSub;
-  String? _speechTempPath;
+  StreamSubscription<String>? _voiceResponseStreamSub;
+  final Set<String> _speechTempPaths = <String>{};
+  final Queue<_SpeechChunk> _speechQueue = Queue<_SpeechChunk>();
+  Future<void> _speechSynthesisChain = Future<void>.value();
+  _SpeechChunk? _activeSpeechChunk;
 
   // ── Conversation ──────────────────────────────────────────────────────────
   final _conversationHistory = <Map<String, String>>[];
@@ -218,6 +239,7 @@ class _AiGuideScreenState extends State<AiGuideScreen>
   // ── Voice mode core ────────────────────────────────────────────────────────
   _VoiceState _voiceState = _VoiceState.idle;
   bool _isExiting = false;
+  int _voiceTurnId = 0;
 
   // ── Word streaming (Task 4) ────────────────────────────────────────────────
   List<String> _words = [];
@@ -234,6 +256,13 @@ class _AiGuideScreenState extends State<AiGuideScreen>
   double _beatDecayStart = 0.0;
   double _lastSpeakingAmp = 0.0;
   bool _ttsCompletionArmed = false;
+  bool _deviceTtsActive = false;
+  bool _speechStreamDone = false;
+  bool _geminiTtsFailed = false;
+  bool _hasStartedSpeakingThisTurn = false;
+  String _unsynthesizedText = '';
+  bool _deviceTtsFallbackPending = false;
+  double _liveMicLevel = 0.0;
 
   // ── Pulse rings (Task 11b) ─────────────────────────────────────────────────
   final List<_PulseRing> _pulseRings = [];
@@ -241,6 +270,22 @@ class _AiGuideScreenState extends State<AiGuideScreen>
 
   // ── Thinking dots (Task 17) ────────────────────────────────────────────────
   bool _thinkingDotsVisible = false;
+  bool _speechReady = false;
+  bool _speechAvailable = false;
+  bool _speechPermissionDenied = false;
+  bool _speechListening = false;
+  bool _speechSubmitPending = false;
+  String _liveUserTranscript = '';
+  String _finalUserTranscript = '';
+  String _voiceHint = '';
+  String _streamSnapshot = '';
+  String _streamPendingText = '';
+  String _fullAiResponseText = '';
+  DateTime? _listenReleasedAt;
+  DateTime? _firstTextTokenAt;
+  DateTime? _firstSentenceReadyAt;
+  DateTime? _firstAudioReadyAt;
+  DateTime? _playbackStartedAt;
 
   // ── Particle count (Task 9d) ───────────────────────────────────────────────
   late int _particleCount;
@@ -344,18 +389,24 @@ class _AiGuideScreenState extends State<AiGuideScreen>
 
     _timeCtrl.addListener(_onTimeTick);
 
+    _speechToText = stt.SpeechToText();
     _tts = FlutterTts();
     _tts.setLanguage('en-US');
     _tts.setSpeechRate(0.50);
     _tts.setVolume(1.0);
     _tts.setCompletionHandler(() {
-      if (mounted) {
+      if (mounted && _deviceTtsActive) {
         unawaited(_handleTtsCompleted());
       }
     });
     _speechPlayer = AudioPlayer();
     _speechPlayerSub = _speechPlayer.playerStateStream.listen((state) {
-      if (!mounted || !_ttsCompletionArmed) return;
+      if (!mounted ||
+          !_ttsCompletionArmed ||
+          _deviceTtsActive ||
+          _activeSpeechChunk == null) {
+        return;
+      }
       if (state.processingState == ProcessingState.completed) {
         unawaited(_handleTtsCompleted());
       }
@@ -395,13 +446,15 @@ class _AiGuideScreenState extends State<AiGuideScreen>
     _responseScrollCtrl.dispose();
     _wordTimer?.cancel();
     _connectivitySub?.cancel();
+    _voiceResponseStreamSub?.cancel();
     _speechPlayerSub?.cancel();
+    unawaited(_cancelSpeechRecognition());
     unawaited(_speechPlayer.stop());
     unawaited(_speechPlayer.dispose());
     _tts.stop();
-    if (_speechTempPath != null) {
+    for (final path in _speechTempPaths) {
       try {
-        File(_speechTempPath!).deleteSync();
+        File(path).deleteSync();
       } catch (_) {
         // Ignore temp cleanup failures during dispose.
       }
@@ -423,20 +476,41 @@ class _AiGuideScreenState extends State<AiGuideScreen>
   // ─────────────────────────────────────────────────────────────────────────
   // Task 9e — Time tick: amplitude + beat + pulse ring updates
   // ─────────────────────────────────────────────────────────────────────────
-  bool get _showTranscript => _words.isNotEmpty;
+  bool get _showTranscript =>
+      _words.isNotEmpty &&
+      (_voiceState == _VoiceState.speaking ||
+          _voiceState == _VoiceState.waiting);
   bool get _showMiniOrb =>
       _voiceState == _VoiceState.speaking || _voiceState == _VoiceState.waiting;
   bool get _showCenterOrb => !_showMiniOrb;
   bool get _showControls => !_isExiting;
+  bool get _showUserTranscript =>
+      ((_voiceState == _VoiceState.listening ||
+              _voiceState == _VoiceState.thinking) &&
+          (_displayUserTranscript.isNotEmpty || _voiceHint.isNotEmpty)) ||
+      (_voiceHint.isNotEmpty &&
+          (_voiceState == _VoiceState.waiting ||
+              _voiceState == _VoiceState.idle));
+  String get _displayUserTranscript =>
+      (_voiceState == _VoiceState.thinking
+              ? _finalUserTranscript
+              : _liveUserTranscript)
+          .trim();
   double get _coolTransitionBlend => Curves.easeInOutCubicEmphasized.transform(
     _stateTransitionCtrl.value.clamp(0.0, 1.0),
   );
   double get _elapsedSeconds => _timeCtrl.value * 60.0;
   String get _voiceStatusText => switch (_voiceState) {
-    _VoiceState.listening => 'Listening...',
+    _VoiceState.listening =>
+      _speechPermissionDenied
+          ? 'Microphone access is needed for voice mode'
+          : 'Release to send',
     _VoiceState.thinking => 'Thinking...',
     _VoiceState.speaking => '',
-    _VoiceState.waiting || _VoiceState.idle => 'Say something...',
+    _VoiceState.waiting || _VoiceState.idle =>
+      _speechPermissionDenied
+          ? 'Enable microphone access to talk'
+          : 'Hold to talk',
   };
 
   Future<void> _handleTtsCompleted() async {
@@ -445,25 +519,22 @@ class _AiGuideScreenState extends State<AiGuideScreen>
         _voiceState != _VoiceState.speaking) {
       return;
     }
-    await _settleToWaitingState();
+    if (_deviceTtsActive) {
+      _deviceTtsActive = false;
+      await _settleToWaitingState();
+      return;
+    }
+    await _handleSpeechChunkCompleted();
   }
 
   Future<File> _persistSpeechAudio(Uint8List wavBytes) async {
-    if (_speechTempPath != null) {
-      try {
-        await File(_speechTempPath!).delete();
-      } catch (_) {
-        // Ignore temp cleanup failures and replace the file path below.
-      }
-    }
-
     final tempDir = await getTemporaryDirectory();
     final file = File(
       '${tempDir.path}${Platform.pathSeparator}'
       'mtengatenga_voice_${DateTime.now().millisecondsSinceEpoch}.wav',
     );
     await file.writeAsBytes(wavBytes, flush: true);
-    _speechTempPath = file.path;
+    _speechTempPaths.add(file.path);
     return file;
   }
 
@@ -491,8 +562,31 @@ class _AiGuideScreenState extends State<AiGuideScreen>
     return clip.duration;
   }
 
+  Future<void> _deleteSpeechAudioPath(String path) async {
+    if (!_speechTempPaths.remove(path)) return;
+    try {
+      await File(path).delete();
+    } catch (_) {
+      // Ignore temp cleanup failures for transient TTS files.
+    }
+  }
+
+  Future<void> _clearSpeechAudioFiles() async {
+    if (_speechTempPaths.isEmpty) return;
+    final paths = List<String>.from(_speechTempPaths);
+    _speechTempPaths.clear();
+    for (final path in paths) {
+      try {
+        await File(path).delete();
+      } catch (_) {
+        // Ignore temp cleanup failures for transient TTS files.
+      }
+    }
+  }
+
   Future<void> _stopTtsPlayback() async {
     _ttsCompletionArmed = false;
+    _deviceTtsActive = false;
     try {
       await _speechPlayer.stop();
     } catch (_) {
@@ -505,12 +599,36 @@ class _AiGuideScreenState extends State<AiGuideScreen>
     }
   }
 
+  Future<void> _cancelVoiceResponseStream() async {
+    await _voiceResponseStreamSub?.cancel();
+    _voiceResponseStreamSub = null;
+  }
+
+  void _resetStreamingResponseState() {
+    _speechQueue.clear();
+    _activeSpeechChunk = null;
+    _speechStreamDone = false;
+    _geminiTtsFailed = false;
+    _hasStartedSpeakingThisTurn = false;
+    _unsynthesizedText = '';
+    _deviceTtsFallbackPending = false;
+    _streamSnapshot = '';
+    _streamPendingText = '';
+    _fullAiResponseText = '';
+    _speechSynthesisChain = Future<void>.value();
+    _firstTextTokenAt = null;
+    _firstSentenceReadyAt = null;
+    _firstAudioReadyAt = null;
+    _playbackStartedAt = null;
+  }
+
   void _resetVoiceReactivity() {
     _pulseRings.clear();
     _lastAmplitude = 0.0;
     _beatStrength = 0.0;
     _beatDecayStart = 0.0;
     _lastSpeakingAmp = 0.0;
+    _liveMicLevel = 0.0;
   }
 
   Future<void> _clearVoiceTranscript({bool animate = true}) async {
@@ -533,8 +651,13 @@ class _AiGuideScreenState extends State<AiGuideScreen>
   }
 
   Future<void> _resetVoiceOverlayState() async {
+    _voiceTurnId++;
+    await _cancelVoiceResponseStream();
+    await _cancelSpeechRecognition();
     await _stopTtsPlayback();
+    await _clearSpeechAudioFiles();
     _cancelWordStream();
+    _resetStreamingResponseState();
     _resetVoiceReactivity();
     _pulseCtrl
       ..stop()
@@ -551,6 +674,11 @@ class _AiGuideScreenState extends State<AiGuideScreen>
       _wordRevealDelays = const [];
       _thinkingDotsVisible = false;
       _isExiting = false;
+      _speechListening = false;
+      _speechSubmitPending = false;
+      _liveUserTranscript = '';
+      _finalUserTranscript = '';
+      _voiceHint = '';
     });
   }
 
@@ -558,10 +686,13 @@ class _AiGuideScreenState extends State<AiGuideScreen>
     if (!mounted) return;
     _ampFrameCount++;
     if (_ampFrameCount.isEven) {
-      _cachedAmplitude = _AmplitudeEngine.getValue(
+      final fallbackAmplitude = _AmplitudeEngine.getValue(
         _elapsedSeconds,
         _voiceState,
       );
+      _cachedAmplitude = _voiceState == _VoiceState.listening
+          ? max(_liveMicLevel, fallbackAmplitude * 0.32)
+          : fallbackAmplitude;
       _updateBeatDetection(_elapsedSeconds);
       _checkPulseEmit(_elapsedSeconds);
     }
@@ -690,38 +821,631 @@ class _AiGuideScreenState extends State<AiGuideScreen>
   // ─────────────────────────────────────────────────────────────────────────
   // Task 3b — Sequenced orb-shrink → text-stream
   // ─────────────────────────────────────────────────────────────────────────
+  int _nextVoiceTurnId() => ++_voiceTurnId;
+
+  void _logVoiceMetric(String label, DateTime? timestamp) {
+    if (_listenReleasedAt == null || timestamp == null) return;
+    final elapsed = timestamp.difference(_listenReleasedAt!).inMilliseconds;
+    debugPrint('Voice turn metric [$label]: ${elapsed}ms');
+  }
+
+  Future<bool> _ensureSpeechReady() async {
+    if (_speechReady) return _speechAvailable;
+    final available = await _speechToText.initialize(
+      onStatus: _handleSpeechStatus,
+      onError: _handleSpeechError,
+      finalTimeout: const Duration(milliseconds: 900),
+    );
+    _speechAvailable = available;
+    _speechReady = available;
+    return _speechAvailable;
+  }
+
+  Future<void> _cancelSpeechRecognition() async {
+    try {
+      if (_speechReady || _speechListening) {
+        await _speechToText.cancel();
+      }
+    } catch (_) {
+      // Ignore speech cleanup errors during mode transitions.
+    } finally {
+      _speechListening = false;
+    }
+  }
+
+  Future<void> _stopSpeechRecognition() async {
+    try {
+      if (_speechReady || _speechListening) {
+        await _speechToText.stop();
+      }
+    } catch (_) {
+      _speechListening = false;
+    }
+  }
+
+  void _handleSpeechStatus(String status) {
+    final isListening = status == stt.SpeechToText.listeningStatus;
+    final stopped =
+        status == stt.SpeechToText.notListeningStatus ||
+        status == stt.SpeechToText.doneStatus;
+    if (mounted && _speechListening != isListening) {
+      setState(() => _speechListening = isListening);
+    } else {
+      _speechListening = isListening;
+    }
+    if (stopped) {
+      _speechListening = false;
+      unawaited(_maybeSubmitRecognizedSpeech());
+    }
+  }
+
+  void _handleSpeechError(SpeechRecognitionError error) {
+    final message = error.errorMsg.trim();
+    final lower = message.toLowerCase();
+    final permissionIssue = lower.contains('permission');
+    _speechPermissionDenied = permissionIssue;
+    _speechAvailable = false;
+    _speechReady = false;
+    _speechListening = false;
+    if (!mounted) return;
+    setState(() {
+      _voiceHint = permissionIssue
+          ? 'Microphone access is off. Enable it and try again.'
+          : 'I had trouble hearing that. Hold to talk and try again.';
+    });
+    if (_voiceState == _VoiceState.listening) {
+      _onStateChanged(_VoiceState.waiting);
+    }
+  }
+
+  void _handleSpeechResult(SpeechRecognitionResult result) {
+    final transcript = result.recognizedWords.trim();
+    if (!mounted) {
+      _liveUserTranscript = transcript;
+      if (result.finalResult) {
+        _finalUserTranscript = transcript;
+      }
+      return;
+    }
+    setState(() {
+      _liveUserTranscript = transcript;
+      if (result.finalResult) {
+        _finalUserTranscript = transcript;
+      }
+    });
+    if (result.finalResult) {
+      unawaited(_maybeSubmitRecognizedSpeech());
+    }
+  }
+
+  void _handleSpeechSoundLevel(double level) {
+    _liveMicLevel = _normalizeSpeechLevel(level);
+  }
+
+  double _normalizeSpeechLevel(double level) {
+    final normalized = ((level + 2.0) / 16.0).clamp(0.0, 1.0);
+    return pow(normalized, 0.8).toDouble();
+  }
+
   Future<void> _startListeningTurn() async {
+    final turnId = _nextVoiceTurnId();
+    await _cancelVoiceResponseStream();
+    await _cancelSpeechRecognition();
     await _stopTtsPlayback();
+    await _clearSpeechAudioFiles();
+    _resetStreamingResponseState();
     _resetVoiceReactivity();
+    _speechSubmitPending = false;
+    _liveUserTranscript = '';
+    _finalUserTranscript = '';
+    _voiceHint = '';
+    _speechPermissionDenied = false;
+    _listenReleasedAt = null;
+
     if (_showTranscript) {
       await _clearVoiceTranscript();
     }
-    if (!mounted) return;
+
+    final available = await _ensureSpeechReady();
+    if (!mounted || turnId != _voiceTurnId) return;
+    if (!available) {
+      setState(() {
+        _voiceHint = _speechPermissionDenied
+            ? 'Microphone access is off. Enable it and try again.'
+            : 'Speech recognition is unavailable on this device right now.';
+      });
+      _onStateChanged(_VoiceState.waiting);
+      return;
+    }
+
     _onStateChanged(_VoiceState.listening);
+    try {
+      await _speechToText.listen(
+        onResult: _handleSpeechResult,
+        onSoundLevelChange: _handleSpeechSoundLevel,
+        pauseFor: const Duration(seconds: 8),
+        listenFor: const Duration(seconds: 30),
+        listenOptions: stt.SpeechListenOptions(
+          partialResults: true,
+          listenMode: stt.ListenMode.dictation,
+          cancelOnError: true,
+        ),
+      );
+      if (!mounted || turnId != _voiceTurnId) return;
+      setState(() => _speechListening = true);
+    } catch (_) {
+      if (!mounted || turnId != _voiceTurnId) return;
+      setState(() {
+        _speechListening = false;
+        _voiceHint = 'I couldn’t start listening. Hold to talk and try again.';
+      });
+      _onStateChanged(_VoiceState.waiting);
+    }
   }
 
-  Future<void> _enterSpeakingState(String text, {bool speakText = true}) async {
+  Future<void> _finishListeningTurn() async {
+    if (_voiceState != _VoiceState.listening) return;
+    _speechSubmitPending = true;
+    _listenReleasedAt = DateTime.now();
+    try {
+      await _stopSpeechRecognition();
+    } catch (_) {
+      _speechListening = false;
+    }
+    await _maybeSubmitRecognizedSpeech();
+  }
+
+  Future<void> _maybeSubmitRecognizedSpeech() async {
+    if (!_speechSubmitPending ||
+        _speechListening ||
+        _voiceState != _VoiceState.listening ||
+        _mode != _AiMode.voice) {
+      return;
+    }
+    _speechSubmitPending = false;
+    final transcript = _finalUserTranscript.trim().isNotEmpty
+        ? _finalUserTranscript.trim()
+        : _liveUserTranscript.trim();
+    if (transcript.isEmpty) {
+      if (!mounted) return;
+      setState(() {
+        _voiceHint = 'I didn’t catch that. Hold to talk and try again.';
+      });
+      _onStateChanged(_VoiceState.waiting);
+      return;
+    }
+    await _submitRecognizedSpeech(transcript);
+  }
+
+  Future<void> _submitRecognizedSpeech(String transcript) async {
+    final turnId = _voiceTurnId;
+    _logVoiceMetric('listen_end', _listenReleasedAt);
+    if (_showTranscript) {
+      await _clearVoiceTranscript();
+    }
+    if (!mounted || turnId != _voiceTurnId) return;
+
+    setState(() {
+      _finalUserTranscript = transcript;
+      _liveUserTranscript = transcript;
+      _voiceHint = '';
+    });
+    _onStateChanged(_VoiceState.thinking);
+    unawaited(_consumeVoiceResponseStream(turnId, transcript));
+  }
+
+  Future<void> _consumeVoiceResponseStream(
+    int turnId,
+    String transcript,
+  ) async {
+    if (_isOffline) {
+      await _enterSpeakingState(
+        'Voice guide needs an internet connection before I can answer out loud.',
+        speakText: false,
+      );
+      return;
+    }
+
+    await _cancelVoiceResponseStream();
+    final stream = _geminiService.voiceQueryStream(
+      widget.artifact,
+      transcript,
+      history: List<Map<String, String>>.from(_conversationHistory),
+    );
+
+    _voiceResponseStreamSub = stream.listen(
+      (snapshot) => _handleVoiceResponseSnapshot(turnId, snapshot),
+      onError: (Object error, StackTrace stackTrace) {
+        unawaited(_handleVoiceResponseError(turnId, error, stackTrace));
+      },
+      onDone: () {
+        unawaited(_finalizeVoiceResponseStream(turnId, transcript));
+      },
+      cancelOnError: true,
+    );
+  }
+
+  Future<void> _handleVoiceResponseError(
+    int turnId,
+    Object error,
+    StackTrace stackTrace,
+  ) async {
+    debugPrint('Voice response stream failed: $error');
+    debugPrintStack(stackTrace: stackTrace);
+    if (!mounted || turnId != _voiceTurnId) return;
+    final isQuota = error.toString().toLowerCase().contains('quota') ||
+        error.toString().toLowerCase().contains('rate limit');
+    final String fallback;
+    if (_isOffline) {
+      fallback =
+          'Voice guide needs an internet connection before I can answer out loud.';
+    } else if (isQuota) {
+      fallback =
+          'The AI guide is a bit busy right now. Please wait a moment and try again.';
+    } else {
+      fallback =
+          'I hit a snag preparing that response. Please try again in a moment.';
+    }
+    await _enterSpeakingState(
+      fallback,
+      speakText: true,
+      preferGeminiPlayback: false,
+    );
+  }
+
+  void _handleVoiceResponseSnapshot(int turnId, String snapshot) {
+    if (!mounted || turnId != _voiceTurnId) return;
+    final delta = _extractStreamDelta(snapshot);
+    if (delta.isEmpty) return;
+
+    _fullAiResponseText = '$_fullAiResponseText$delta'.trimLeft();
+    _streamPendingText = '$_streamPendingText$delta';
+    _firstTextTokenAt ??= DateTime.now();
+    _logVoiceMetric('first_text_token', _firstTextTokenAt);
+
+    for (final chunk in _takeReadySentenceChunks()) {
+      _firstSentenceReadyAt ??= DateTime.now();
+      _logVoiceMetric('first_sentence_ready', _firstSentenceReadyAt);
+      _enqueueSpeechChunkSynthesis(turnId, chunk);
+    }
+  }
+
+  String _extractStreamDelta(String snapshot) {
+    final text = snapshot.trim();
+    if (text.isEmpty) return '';
+    if (_streamSnapshot.isEmpty) {
+      _streamSnapshot = text;
+      return text;
+    }
+    if (text.startsWith(_streamSnapshot)) {
+      final delta = text.substring(_streamSnapshot.length);
+      _streamSnapshot = text;
+      return delta;
+    }
+    if (_streamSnapshot.startsWith(text)) {
+      return '';
+    }
+    _streamSnapshot = text;
+    return text;
+  }
+
+  static const int _minChunkLength = 40;
+
+  List<String> _takeReadySentenceChunks({bool flushRemainder = false}) {
+    final chunks = <String>[];
+    final allMatches = RegExp(
+      r'(.+?[.!?])(?=\s|$)',
+      dotAll: true,
+    ).allMatches(_streamPendingText).toList();
+
+    if (allMatches.isEmpty && !flushRemainder) {
+      return chunks;
+    }
+
+    // Track sentence texts alongside their end positions in the source.
+    final sentenceTexts = <String>[];
+    final sentenceEnds = <int>[];
+    for (final match in allMatches) {
+      final sentence = match.group(0)?.trim();
+      if (sentence != null && sentence.isNotEmpty) {
+        sentenceTexts.add(sentence);
+        sentenceEnds.add(match.end);
+      }
+    }
+
+    // Merge short sentences together to avoid tiny TTS chunks that cause
+    // audible gaps between playback segments.
+    final buffer = StringBuffer();
+    var consumedUpTo = 0;
+    for (var i = 0; i < sentenceTexts.length; i++) {
+      if (buffer.isEmpty) {
+        buffer.write(sentenceTexts[i]);
+      } else {
+        buffer.write(' ${sentenceTexts[i]}');
+      }
+      if (buffer.length >= _minChunkLength) {
+        chunks.add(buffer.toString());
+        consumedUpTo = sentenceEnds[i];
+        buffer.clear();
+      }
+    }
+
+    // Keep leftover short sentences in the buffer for the next call, unless
+    // we are flushing the remainder.
+    if (buffer.isNotEmpty) {
+      if (flushRemainder) {
+        chunks.add(buffer.toString());
+        consumedUpTo = sentenceEnds.last;
+      }
+      // Otherwise consumedUpTo stays before these un-emitted sentences,
+      // so they remain in _streamPendingText for the next call.
+    }
+
+    if (flushRemainder) {
+      final remainder = _streamPendingText.substring(consumedUpTo).trim();
+      if (remainder.isNotEmpty) {
+        chunks.add(remainder);
+      }
+      consumedUpTo = _streamPendingText.length;
+    }
+    _streamPendingText = _streamPendingText.substring(consumedUpTo);
+    return chunks;
+  }
+
+  void _enqueueSpeechChunkSynthesis(int turnId, String text) {
+    final chunkText = text.trim();
+    if (chunkText.isEmpty) return;
+
+    // If Gemini TTS already failed, accumulate text for device TTS fallback.
+    if (_geminiTtsFailed) {
+      _unsynthesizedText = '$_unsynthesizedText $chunkText'.trimLeft();
+      return;
+    }
+
+    _speechSynthesisChain = _speechSynthesisChain.then((_) async {
+      if (!mounted || turnId != _voiceTurnId) return;
+      if (_geminiTtsFailed) {
+        _unsynthesizedText = '$_unsynthesizedText $chunkText'.trimLeft();
+        return;
+      }
+      try {
+        final clip = await _geminiTtsService.synthesizeSpeech(chunkText);
+        if (!mounted || turnId != _voiceTurnId) return;
+        if (_geminiTtsFailed) {
+          _unsynthesizedText = '$_unsynthesizedText $chunkText'.trimLeft();
+          return;
+        }
+        final file = await _persistSpeechAudio(clip.wavBytes);
+        if (!mounted || turnId != _voiceTurnId) {
+          await _deleteSpeechAudioPath(file.path);
+          return;
+        }
+        _firstAudioReadyAt ??= DateTime.now();
+        _logVoiceMetric('first_audio_ready', _firstAudioReadyAt);
+        setState(() {
+          _speechQueue.add(
+            _SpeechChunk(
+              text: chunkText,
+              duration: clip.duration,
+              audioPath: file.path,
+            ),
+          );
+        });
+        await _maybeStartSpeechPlayback(turnId);
+      } catch (error, stackTrace) {
+        debugPrint('Chunk TTS synthesis failed: $error');
+        debugPrintStack(stackTrace: stackTrace);
+        _geminiTtsFailed = true;
+        _unsynthesizedText = '$_unsynthesizedText $chunkText'.trimLeft();
+      }
+    });
+  }
+
+  Future<void> _maybeStartSpeechPlayback(int turnId) async {
+    if (!mounted ||
+        turnId != _voiceTurnId ||
+        _deviceTtsActive ||
+        _activeSpeechChunk != null ||
+        _speechQueue.isEmpty) {
+      return;
+    }
+
+    final chunk = _speechQueue.removeFirst();
+    _activeSpeechChunk = chunk;
+    _ttsCompletionArmed = true;
+    if (_voiceState == _VoiceState.thinking) {
+      _onStateChanged(_VoiceState.speaking);
+    }
+
+    try {
+      await _speechPlayer.stop();
+      await _speechPlayer.setFilePath(chunk.audioPath);
+      if (!mounted || turnId != _voiceTurnId) return;
+      _playbackStartedAt ??= DateTime.now();
+      _logVoiceMetric('playback_start', _playbackStartedAt);
+      _hasStartedSpeakingThisTurn = true;
+      _finalUserTranscript = '';
+      _liveUserTranscript = '';
+      if (_words.isEmpty) {
+        _textFadeCtrl.forward(from: 0.0);
+      } else {
+        _textFadeCtrl.forward();
+      }
+      _appendTranscriptChunk(
+        chunk.text,
+        targetDuration: chunk.duration,
+        leadIn: _words.isEmpty
+            ? const Duration(milliseconds: 40)
+            : const Duration(milliseconds: 16),
+      );
+      unawaited(_speechPlayer.play());
+    } catch (_) {
+      await _deleteSpeechAudioPath(chunk.audioPath);
+      _activeSpeechChunk = null;
+      if (_speechStreamDone) {
+        await _settleToWaitingState();
+      }
+    }
+  }
+
+  void _appendTranscriptChunk(
+    String text, {
+    Duration? targetDuration,
+    Duration leadIn = const Duration(milliseconds: 40),
+  }) {
+    final normalizedText = text.trim();
+    if (normalizedText.isEmpty) return;
+    final words = normalizedText.split(RegExp(r'\s+'));
+    final revealDelays = _buildWordRevealDelays(
+      words,
+      targetDuration: targetDuration,
+      leadIn: leadIn,
+    );
+    setState(() {
+      _words = [..._words, ...words];
+      _wordRevealDelays = [..._wordRevealDelays, ...revealDelays];
+    });
+    if (_wordTimer == null) {
+      _scheduleNextWord();
+    }
+  }
+
+  Future<void> _handleSpeechChunkCompleted() async {
+    final completedChunk = _activeSpeechChunk;
+    _activeSpeechChunk = null;
+    if (completedChunk != null) {
+      await _deleteSpeechAudioPath(completedChunk.audioPath);
+    }
+    if (!mounted || _mode != _AiMode.voice) return;
+    if (_speechQueue.isNotEmpty) {
+      await _maybeStartSpeechPlayback(_voiceTurnId);
+      return;
+    }
+    if (_speechStreamDone) {
+      if (_deviceTtsFallbackPending) {
+        await _speakUnsynthesizedFallback();
+        return;
+      }
+      _armWaitingAfterTranscript();
+    }
+  }
+
+  void _armWaitingAfterTranscript() {
+    if (!mounted || _voiceState != _VoiceState.speaking) return;
+    if (_revealedWordCount >= _words.length) {
+      unawaited(_settleToWaitingState());
+      return;
+    }
+    _onWordStreamComplete = () {
+      if (mounted && _voiceState == _VoiceState.speaking) {
+        unawaited(_settleToWaitingState());
+      }
+    };
+  }
+
+  Future<void> _speakUnsynthesizedFallback() async {
+    _deviceTtsFallbackPending = false;
+    final remaining = _unsynthesizedText.trim();
+    if (remaining.isEmpty || !mounted || _mode != _AiMode.voice) {
+      _armWaitingAfterTranscript();
+      return;
+    }
+    _ttsCompletionArmed = true;
+    _deviceTtsActive = true;
+    _appendTranscriptChunk(remaining);
+    try {
+      await _tts.speak(remaining);
+    } catch (_) {
+      await _settleToWaitingState();
+    }
+  }
+
+  Future<void> _finalizeVoiceResponseStream(
+    int turnId,
+    String userTranscript,
+  ) async {
+    if (!mounted || turnId != _voiceTurnId) return;
+    _speechStreamDone = true;
+    for (final chunk in _takeReadySentenceChunks(flushRemainder: true)) {
+      _enqueueSpeechChunkSynthesis(turnId, chunk);
+    }
+    await _speechSynthesisChain;
+    if (!mounted || turnId != _voiceTurnId) return;
+
+    final finalResponse = _fullAiResponseText.trim().isEmpty
+        ? 'I have a quiet moment right now. Try asking again and I will jump back in.'
+        : _fullAiResponseText.trim();
+
+    _conversationHistory.add({'role': 'user', 'content': userTranscript});
+    _conversationHistory.add({'role': 'model', 'content': finalResponse});
+    if (_conversationHistory.length > 20) {
+      _conversationHistory.removeRange(0, _conversationHistory.length - 20);
+    }
+
+    if (!_hasStartedSpeakingThisTurn) {
+      // Nothing played yet. Skip Gemini retry if it already failed.
+      await _enterSpeakingState(
+        finalResponse,
+        speakText: true,
+        preferGeminiPlayback: !_geminiTtsFailed,
+      );
+      return;
+    }
+
+    // Some chunks played. If Gemini TTS failed mid-stream, queue device TTS
+    // fallback for the remaining unsynthesized text.
+    if (_geminiTtsFailed && _unsynthesizedText.trim().isNotEmpty) {
+      _deviceTtsFallbackPending = true;
+      if (_activeSpeechChunk == null && _speechQueue.isEmpty) {
+        await _speakUnsynthesizedFallback();
+      }
+      // Otherwise _handleSpeechChunkCompleted will trigger the fallback
+      // after the last queued chunk finishes playing.
+      return;
+    }
+
+    if (_activeSpeechChunk == null && _speechQueue.isEmpty) {
+      _armWaitingAfterTranscript();
+    }
+  }
+
+  Future<void> _enterSpeakingState(
+    String text, {
+    bool speakText = true,
+    bool preferGeminiPlayback = true,
+  }) async {
     Duration? preparedSpeechDuration;
     var useGeminiPlayback = false;
 
     if (speakText) {
       _ttsCompletionArmed = true;
-      try {
-        preparedSpeechDuration = await _prepareGeminiSpeechPlayback(text);
-        useGeminiPlayback = preparedSpeechDuration > Duration.zero;
-      } catch (e, st) {
-        debugPrint(
-          'Gemini voice preparation failed, falling back to device TTS: $e',
-        );
-        debugPrintStack(stackTrace: st);
-        useGeminiPlayback = false;
+      if (preferGeminiPlayback) {
+        try {
+          preparedSpeechDuration = await _prepareGeminiSpeechPlayback(text);
+          useGeminiPlayback = preparedSpeechDuration > Duration.zero;
+        } catch (e, st) {
+          debugPrint(
+            'Gemini voice preparation failed, falling back to device TTS: $e',
+          );
+          debugPrintStack(stackTrace: st);
+          useGeminiPlayback = false;
+        }
       }
     }
 
-    if (!mounted || _voiceState != _VoiceState.thinking) return;
+    if (!mounted ||
+        (_voiceState != _VoiceState.thinking &&
+            _voiceState != _VoiceState.speaking)) {
+      return;
+    }
 
+    setState(() {
+      _finalUserTranscript = '';
+      _liveUserTranscript = '';
+      _voiceHint = '';
+    });
     _onStateChanged(_VoiceState.speaking);
-    await Future.delayed(const Duration(milliseconds: 560));
+    await Future.delayed(const Duration(milliseconds: 260));
     if (!mounted || _voiceState != _VoiceState.speaking) return;
 
     _textFadeCtrl.forward(from: 0.0);
@@ -751,7 +1475,11 @@ class _AiGuideScreenState extends State<AiGuideScreen>
 
     if (useGeminiPlayback) {
       try {
+        _deviceTtsActive = false;
         await _speechPlayer.play();
+        if (mounted && _voiceState == _VoiceState.speaking) {
+          await _settleToWaitingState();
+        }
       } catch (_) {
         await _settleToWaitingState();
       }
@@ -759,6 +1487,7 @@ class _AiGuideScreenState extends State<AiGuideScreen>
     }
 
     try {
+      _deviceTtsActive = true;
       await _tts.speak(text);
     } catch (_) {
       await _settleToWaitingState();
@@ -874,18 +1603,28 @@ class _AiGuideScreenState extends State<AiGuideScreen>
   // ─────────────────────────────────────────────────────────────────────────
   Future<void> _settleToWaitingState() async {
     _ttsCompletionArmed = false;
+    _deviceTtsActive = false;
     _cancelWordStream();
     if (!mounted || _mode != _AiMode.voice) return;
 
     setState(() {
       _revealedWordCount = _words.length;
+      _speechListening = false;
+      _liveUserTranscript = '';
+      _finalUserTranscript = '';
+      _voiceHint = '';
     });
     _textFadeCtrl.forward();
     _onStateChanged(_VoiceState.waiting);
   }
 
   Future<void> _setIdleState({bool clearTranscript = true}) async {
+    _nextVoiceTurnId();
+    await _cancelVoiceResponseStream();
+    await _cancelSpeechRecognition();
     await _stopTtsPlayback();
+    await _clearSpeechAudioFiles();
+    _resetStreamingResponseState();
     _resetVoiceReactivity();
     if (clearTranscript) {
       await _clearVoiceTranscript(animate: false);
@@ -893,6 +1632,13 @@ class _AiGuideScreenState extends State<AiGuideScreen>
       _cancelWordStream();
     }
     if (!mounted) return;
+    setState(() {
+      _speechListening = false;
+      _speechSubmitPending = false;
+      _liveUserTranscript = '';
+      _finalUserTranscript = '';
+      _voiceHint = '';
+    });
     _onStateChanged(_VoiceState.idle);
   }
 
@@ -931,53 +1677,29 @@ class _AiGuideScreenState extends State<AiGuideScreen>
   // ─────────────────────────────────────────────────────────────────────────
   // Orb tap handler
   // ─────────────────────────────────────────────────────────────────────────
-  Future<void> _handleOrbTap() async {
+  Future<void> _handleVoicePressStart() async {
+    if (_mode != _AiMode.voice || !_showControls) return;
     HapticFeedback.mediumImpact();
     switch (_voiceState) {
       case _VoiceState.idle:
       case _VoiceState.waiting:
+      case _VoiceState.speaking:
         await _startListeningTurn();
-        if (!mounted) return;
-        unawaited(_runDemoFlow());
         break;
       case _VoiceState.listening:
+        break;
       case _VoiceState.thinking:
         await _setIdleState(clearTranscript: false);
-        break;
-      case _VoiceState.speaking:
-        await _stopTtsPlayback();
-        await _settleToWaitingState();
+        await _startListeningTurn();
         break;
     }
   }
 
-  Future<void> _runDemoFlow() async {
-    await Future.delayed(const Duration(seconds: 2));
-    if (!mounted || _voiceState != _VoiceState.listening) return;
-    _onStateChanged(_VoiceState.thinking);
-
-    final prompt = widget.artifact != null
-        ? 'Give me a brief, engaging introduction to this artifact.'
-        : 'Welcome me to Mtengatenga Museum and give me a brief overview of what I can explore here.';
-
-    try {
-      if (_isOffline) {
-        throw const SocketException('Offline');
-      }
-
-      final response = await _geminiService.voiceQuery(widget.artifact, prompt);
-      if (!mounted || _voiceState != _VoiceState.thinking) return;
-
-      final safeResponse = response.trim().isEmpty
-          ? 'I have a quiet moment right now. Try asking again and I will jump back in.'
-          : response.trim();
-      await _enterSpeakingState(safeResponse);
-    } catch (_) {
-      if (!mounted || _voiceState != _VoiceState.thinking) return;
-      final fallback = _isOffline
-          ? 'Voice guide needs an internet connection before I can answer out loud.'
-          : 'I hit a snag preparing that response. Please try again in a moment.';
-      await _enterSpeakingState(fallback, speakText: false);
+  Future<void> _handleVoicePressEnd() async {
+    if (_mode != _AiMode.voice) return;
+    if (_voiceState == _VoiceState.listening) {
+      HapticFeedback.selectionClick();
+      await _finishListeningTurn();
     }
   }
 
@@ -1712,8 +2434,17 @@ class _AiGuideScreenState extends State<AiGuideScreen>
         duration: const Duration(milliseconds: 560),
         curve: Curves.easeInOutCubic,
         padding: orbPadding,
-        child: GestureDetector(
-          onTap: _showControls ? () => unawaited(_handleOrbTap()) : null,
+        child: Listener(
+          behavior: HitTestBehavior.translucent,
+          onPointerDown: _showControls
+              ? (_) => unawaited(_handleVoicePressStart())
+              : null,
+          onPointerUp: _showControls
+              ? (_) => unawaited(_handleVoicePressEnd())
+              : null,
+          onPointerCancel: _showControls
+              ? (_) => unawaited(_handleVoicePressEnd())
+              : null,
           child: SizedBox(
             width: layerSize,
             height: layerSize,
@@ -1913,6 +2644,34 @@ class _AiGuideScreenState extends State<AiGuideScreen>
         mainAxisSize: MainAxisSize.min,
         children: [
           AnimatedSwitcher(
+            duration: const Duration(milliseconds: 220),
+            child: _showUserTranscript
+                ? Container(
+                    key: ValueKey(
+                      'user-transcript-${_displayUserTranscript}_$_voiceHint',
+                    ),
+                    constraints: const BoxConstraints(maxWidth: 320),
+                    padding: const EdgeInsets.symmetric(horizontal: 28),
+                    child: Text(
+                      _displayUserTranscript.isNotEmpty
+                          ? _displayUserTranscript
+                          : _voiceHint,
+                      textAlign: TextAlign.center,
+                      maxLines: 4,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.w300,
+                        color: Colors.white.withValues(alpha: 0.76),
+                        height: 1.28,
+                        letterSpacing: -0.2,
+                      ),
+                    ),
+                  )
+                : const SizedBox.shrink(key: ValueKey('user-transcript-empty')),
+          ),
+          if (_showUserTranscript) const SizedBox(height: 18),
+          AnimatedSwitcher(
             duration: const Duration(milliseconds: 350),
             transitionBuilder: (child, anim) =>
                 FadeTransition(opacity: anim, child: child),
@@ -2065,9 +2824,10 @@ class _AiGuideScreenState extends State<AiGuideScreen>
               AnimatedOpacity(
                 duration: const Duration(milliseconds: 350),
                 opacity: buttonOpacity,
-                child: _OrbBtn(
+                child: _HoldOrbBtn(
                   icon: Icons.mic_none_rounded,
-                  onTap: () => unawaited(_handleOrbTap()),
+                  onPressStart: () => unawaited(_handleVoicePressStart()),
+                  onPressEnd: () => unawaited(_handleVoicePressEnd()),
                 ),
               ),
             ],
@@ -2272,6 +3032,41 @@ class _OrbBtn extends StatelessWidget {
   Widget build(BuildContext context) {
     return GestureDetector(
       onTap: onTap,
+      child: Container(
+        width: 56,
+        height: 56,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: Colors.white.withValues(alpha: 0.10),
+          border: Border.all(
+            color: Colors.white.withValues(alpha: 0.08),
+            width: 0.8,
+          ),
+        ),
+        child: Icon(icon, color: Colors.white, size: 22),
+      ),
+    );
+  }
+}
+
+class _HoldOrbBtn extends StatelessWidget {
+  const _HoldOrbBtn({
+    required this.icon,
+    required this.onPressStart,
+    required this.onPressEnd,
+  });
+
+  final IconData icon;
+  final VoidCallback onPressStart;
+  final VoidCallback onPressEnd;
+
+  @override
+  Widget build(BuildContext context) {
+    return Listener(
+      behavior: HitTestBehavior.opaque,
+      onPointerDown: (_) => onPressStart(),
+      onPointerUp: (_) => onPressEnd(),
+      onPointerCancel: (_) => onPressEnd(),
       child: Container(
         width: 56,
         height: 56,
