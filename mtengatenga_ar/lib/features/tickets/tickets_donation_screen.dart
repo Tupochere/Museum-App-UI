@@ -23,7 +23,17 @@ class _TicketsDonationScreenState extends State<TicketsDonationScreen> {
   static const heroUrl =
       'https://lh3.googleusercontent.com/aida-public/AB6AXuAW9Z4KzoiTwNkAkRI8heKUJuYHXAOKOXdWVDQ-QNvdSuElrMho60_9VQKEBHsr8pRyD3DqZIkBfmSxj9MMc_IADwV13yOibBIPY2kR84Op5WquHsQkZY_7b1CCSTz-oqNkyoRYiYnshlKf23REsWsyfE-0bmix1LESKRO5LzUKU_xbCBQ1pl5kHuVVUiLzSHAfGBHQ1DaV5RwURUYyu7aMxqfIjdM8LB1TE1d-Me4YmRlys2D9CyuwRrAX_9DElp0at_iPH3XkOPO9';
 
-  int get ticketTotalMWK => adult * 2000 + student * 1000; // UI-only
+  int get ticketTotalMWK => adult * 2000 + student * 1000; // UI-only (excludes international & donation)
+
+  int _donationAmountUsd() {
+    final custom = _customDonation.text.trim();
+    if (custom.isNotEmpty) {
+      final parsed = int.tryParse(custom);
+      if (parsed != null && parsed > 0) return parsed;
+    }
+    return donationPreset == 0 ? 5 : donationPreset == 1 ? 10 : 20;
+  }
+
   String get donationLabel {
     final custom = _customDonation.text.trim();
     if (custom.isNotEmpty) return '\$${custom} donation';
@@ -391,6 +401,9 @@ class _TicketsDonationScreenState extends State<TicketsDonationScreen> {
                               international: international,
                               donationLabel: donationLabel,
                               totalLabel: 'MWK ${ticketTotalMWK.toString()}',
+                              donationAmountUsd: _donationAmountUsd(),
+                              totalAmountMwk: ticketTotalMWK,
+                              isMonthlyDonation: monthly,
                             );
                             Navigator.of(context).push(
                               MaterialPageRoute(

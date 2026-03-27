@@ -46,6 +46,24 @@ class ArService {
     _isSessionActive = true;
   }
 
+  /// Polls the current ARCore tracking state with defensive parsing.
+  ///
+  /// Returns `'TRACKING'`, `'PAUSED'`, or `'STOPPED'`.
+  Future<String> pollTrackingState() async {
+    final controller = _controller;
+    if (controller == null || !_isSessionActive) return 'PAUSED';
+    try {
+      final result = await controller.getTrackingState();
+      final state = result?.toString().trim();
+      if (state != null && state.isNotEmpty) return state;
+      // Fallback to the synchronous property.
+      final fallback = controller.trackingState.trim();
+      return fallback.isNotEmpty ? fallback : 'PAUSED';
+    } catch (_) {
+      return 'PAUSED';
+    }
+  }
+
   void resumeSession() {
     _controller?.resume();
     _isSessionActive = _controller != null;

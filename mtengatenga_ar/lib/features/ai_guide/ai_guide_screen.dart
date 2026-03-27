@@ -3,6 +3,7 @@ import 'dart:collection';
 import 'dart:io';
 import 'dart:math';
 import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_tts/flutter_tts.dart';
@@ -13,7 +14,10 @@ import 'package:speech_to_text/speech_recognition_result.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import '../../core/domain/entities/artifact.model.dart';
 import '../../services/gemini_service.dart';
+import '../../services/elevenlabs_tts_service.dart';
 import '../../services/gemini_tts_service.dart';
+import '../../services/google_cloud_tts_service.dart';
+import '../../services/openai_tts_service.dart';
 import '../../services/supabase_service.dart';
 import '../../theme/app_tokens.dart';
 import '../map/indoor_navigation_screen.dart';
@@ -204,6 +208,9 @@ class _AiGuideScreenState extends State<AiGuideScreen>
   // ── Services ──────────────────────────────────────────────────────────────
   final _geminiService = GeminiService();
   final _geminiTtsService = GeminiTtsService();
+  final _googleCloudTtsService = GoogleCloudTtsService();
+  final _openAiTtsService = OpenAiTtsService();
+  final _elevenLabsTtsService = ElevenLabsTtsService();
   final _supabaseService = SupabaseService();
   late final FlutterTts _tts;
   late final AudioPlayer _speechPlayer;
@@ -538,8 +545,49 @@ class _AiGuideScreenState extends State<AiGuideScreen>
     return file;
   }
 
+  /// Resolve which TTS provider to use.
+  ///
+  /// Priority: explicit `TTS_PROVIDER` env var → first provider whose API key
+  /// is present → Gemini (always available via GEMINI_API_KEY).
+  String get _ttsProvider {
+    final explicit = dotenv.env['TTS_PROVIDER']?.trim().toLowerCase() ?? '';
+    if (explicit.isNotEmpty) return explicit;
+    // Default to Gemini — uses the same GEMINI_API_KEY as text generation.
+    if ((dotenv.env['ELEVENLABS_API_KEY']?.trim() ?? '').isNotEmpty) {
+      return 'elevenlabs';
+    }
+    if ((dotenv.env['OPENAI_API_KEY']?.trim() ?? '').isNotEmpty) {
+      return 'openai';
+    }
+    if ((dotenv.env['GOOGLE_CLOUD_TTS_KEY']?.trim() ?? '').isNotEmpty) {
+      return 'google_cloud';
+    }
+    return 'gemini';
+  }
+
+  /// Synthesize speech via the configured TTS provider.
+  Future<({Uint8List wavBytes, Duration duration})> _synthesizeSpeech(
+    String text,
+  ) async {
+    switch (_ttsProvider) {
+      case 'elevenlabs':
+        final clip = await _elevenLabsTtsService.synthesizeSpeech(text);
+        return (wavBytes: clip.wavBytes, duration: clip.duration);
+      case 'openai':
+        final clip = await _openAiTtsService.synthesizeSpeech(text);
+        return (wavBytes: clip.wavBytes, duration: clip.duration);
+      case 'google_cloud':
+        final clip = await _googleCloudTtsService.synthesizeSpeech(text);
+        return (wavBytes: clip.wavBytes, duration: clip.duration);
+      case 'gemini':
+      default:
+        final clip = await _geminiTtsService.synthesizeSpeech(text);
+        return (wavBytes: clip.wavBytes, duration: clip.duration);
+    }
+  }
+
   Future<Duration> _prepareGeminiSpeechPlayback(String text) async {
-    final clip = await _geminiTtsService.synthesizeSpeech(text);
+    final clip = await _synthesizeSpeech(text);
     if (!_ttsCompletionArmed ||
         !mounted ||
         _mode != _AiMode.voice ||
@@ -1209,7 +1257,7 @@ class _AiGuideScreenState extends State<AiGuideScreen>
         return;
       }
       try {
-        final clip = await _geminiTtsService.synthesizeSpeech(chunkText);
+        final clip = await _synthesizeSpeech(chunkText);
         if (!mounted || turnId != _voiceTurnId) return;
         if (_geminiTtsFailed) {
           _unsynthesizedText = '$_unsynthesizedText $chunkText'.trimLeft();

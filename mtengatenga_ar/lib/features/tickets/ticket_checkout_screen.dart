@@ -1,7 +1,9 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:webview_flutter/webview_flutter.dart';
+
 import '../../core/models/ui_models.dart';
 import '../../core/ui/components/primary_cta_button.dart';
+import '../../services/payment_service.dart';
 import '../../theme/app_tokens.dart';
 import 'ticket_wallet_screen.dart';
 
@@ -15,7 +17,25 @@ class TicketCheckoutScreen extends StatefulWidget {
 
 class _TicketCheckoutScreenState extends State<TicketCheckoutScreen> {
   TicketCheckoutState _state = TicketCheckoutState.review;
-  bool _paychangu = true;
+
+  final _paymentService = PaymentService();
+
+  // Visitor info
+  final _firstNameController = TextEditingController();
+  final _lastNameController = TextEditingController();
+  final _emailController = TextEditingController();
+  final _formKey = GlobalKey<FormState>();
+
+  // Calculated at checkout time using live rate
+  int _finalTotalMwk = 0;
+  int _donationMwk = 0;
+  @override
+  void dispose() {
+    _firstNameController.dispose();
+    _lastNameController.dispose();
+    _emailController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -40,12 +60,15 @@ class _TicketCheckoutScreenState extends State<TicketCheckoutScreen> {
       case TicketCheckoutState.review:
         return _ReviewStep(
           draft: widget.draft,
-          onContinue: () => setState(() => _state = TicketCheckoutState.paymentMethod),
+          onContinue: () =>
+              setState(() => _state = TicketCheckoutState.paymentMethod),
         );
       case TicketCheckoutState.paymentMethod:
-        return _PaymentStep(
-          paychangu: _paychangu,
-          onChanged: (v) => setState(() => _paychangu = v),
+        return _VisitorInfoStep(
+          formKey: _formKey,
+          firstNameController: _firstNameController,
+          lastNameController: _lastNameController,
+          emailController: _emailController,
           onContinue: _startProcessing,
         );
       case TicketCheckoutState.processing:
@@ -55,7 +78,8 @@ class _TicketCheckoutScreenState extends State<TicketCheckoutScreen> {
             children: [
               CircularProgressIndicator(color: AppColors.primary),
               SizedBox(height: 10),
-              Text('Processing payment...', style: TextStyle(fontWeight: FontWeight.w700)),
+              Text('Processing payment...',
+                  style: TextStyle(fontWeight: FontWeight.w700)),
             ],
           ),
         );
@@ -70,29 +94,179 @@ class _TicketCheckoutScreenState extends State<TicketCheckoutScreen> {
     }
   }
 
-  void _startProcessing() {
+  Future<void> _startProcessing() async {
+    if (!_formKey.currentState!.validate()) return;
+
     setState(() => _state = TicketCheckoutState.processing);
-    Timer(const Duration(seconds: 2), () {
+
+    try {
+      // Calculate the real total using live exchange rate
+      _finalTotalMwk = await _paymentService.calculateTotalMwk(
+        adultCount: widget.draft.adult,
+        studentCount: widget.draft.student,
+        internationalCount: widget.draft.international,
+        donationAmountUsd: widget.draft.donationAmountUsd,
+      );
+
+      // Calculate donation portion in MWK
+      _donationMwk = await _paymentService.calculateTotalMwk(
+        adultCount: 0,
+        studentCount: 0,
+        internationalCount: 0,
+        donationAmountUsd: widget.draft.donationAmountUsd,
+      );
+
+      final ticketMwk = _finalTotalMwk - _donationMwk;
+      final txRef = _paymentService.generateTxRef();
+
+      final fullName =
+          '${_firstNameController.text.trim()} ${_lastNameController.text.trim()}';
+
+      await _paymentService.createPendingOrder(
+        txRef: txRef,
+        visitorName: fullName,
+        visitorEmail: _emailController.text.trim(),
+        adultCount: widget.draft.adult,
+        studentCount: widget.draft.student,
+        internationalCount: widget.draft.international,
+        donationAmountMwk: _donationMwk,
+        ticketAmountMwk: ticketMwk,
+        totalAmountMwk: _finalTotalMwk,
+        isMonthlyDonation: widget.draft.isMonthlyDonation,
+      );
+
+      // Call PayChangu API directly to get checkout URL
+      final checkoutUrl = await _paymentService.createPaymentSession(
+        txRef: txRef,
+        firstName: _firstNameController.text.trim(),
+        lastName: _lastNameController.text.trim(),
+        email: _emailController.text.trim(),
+        amountMwk: _finalTotalMwk,
+        callbackUrl: 'https://mtengatenga-museum.com/payment/callback',
+        returnUrl: 'https://mtengatenga-museum.com/payment/return',
+      );
+
       if (!mounted) return;
-      setState(() => _state = TicketCheckoutState.success);
-      showDialog<void>(
-        context: context,
-        builder: (_) => AlertDialog(
-          title: const Text('Thank You for Donating'),
-          content: const Text(
-            'Your support helps preserve Malawi cultural heritage and educational programs.',
+
+      // Open checkout URL in a WebView
+      final result = await Navigator.of(context).push<String>(
+        MaterialPageRoute(
+          builder: (_) => _PaymentWebViewScreen(
+            checkoutUrl: checkoutUrl,
+            returnUrl: 'https://mtengatenga-museum.com/payment/return',
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Close'),
-            ),
-          ],
         ),
       );
-    });
+
+      if (!mounted) return;
+
+      if (result == 'success') {
+        await _onPaymentSuccess(txRef);
+      } else if (result == 'cancelled') {
+        await _onPaymentCancelled(txRef);
+      } else {
+        // User pressed back or unknown state — treat as cancelled
+        await _onPaymentCancelled(txRef);
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Payment error: $e')),
+      );
+      setState(() => _state = TicketCheckoutState.paymentMethod);
+    }
+  }
+
+  Future<void> _onPaymentSuccess(String txRef) async {
+    setState(() => _state = TicketCheckoutState.processing);
+
+    final verified = await _paymentService.verifyAndFinaliseOrder(
+      txRef: txRef,
+      expectedAmountMwk: _finalTotalMwk,
+    );
+
+    if (!mounted) return;
+
+    if (verified) {
+      setState(() => _state = TicketCheckoutState.success);
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content:
+                Text('Payment verification failed. Please contact support.')),
+      );
+      setState(() => _state = TicketCheckoutState.paymentMethod);
+    }
+  }
+
+  Future<void> _onPaymentCancelled(String txRef) async {
+    await _paymentService.updateOrderStatus(txRef, 'cancelled');
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Payment cancelled.')),
+    );
+    setState(() => _state = TicketCheckoutState.paymentMethod);
   }
 }
+
+// ---------------------------------------------------------------------------
+// PayChangu WebView screen — loads checkout URL, detects return URL
+// ---------------------------------------------------------------------------
+
+class _PaymentWebViewScreen extends StatefulWidget {
+  const _PaymentWebViewScreen({
+    required this.checkoutUrl,
+    required this.returnUrl,
+  });
+
+  final String checkoutUrl;
+  final String returnUrl;
+
+  @override
+  State<_PaymentWebViewScreen> createState() => _PaymentWebViewScreenState();
+}
+
+class _PaymentWebViewScreenState extends State<_PaymentWebViewScreen> {
+  late final WebViewController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = WebViewController()
+      ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      ..setNavigationDelegate(
+        NavigationDelegate(
+          onNavigationRequest: (request) {
+            // Detect when PayChangu redirects to our return URL
+            if (request.url.startsWith(widget.returnUrl)) {
+              Navigator.of(context).pop('success');
+              return NavigationDecision.prevent;
+            }
+            return NavigationDecision.navigate;
+          },
+        ),
+      )
+      ..loadRequest(Uri.parse(widget.checkoutUrl));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Secure Payment'),
+        leading: IconButton(
+          icon: const Icon(Icons.close),
+          onPressed: () => Navigator.of(context).pop('cancelled'),
+        ),
+      ),
+      body: WebViewWidget(controller: _controller),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Step header (unchanged)
+// ---------------------------------------------------------------------------
 
 class _StepHeader extends StatelessWidget {
   const _StepHeader({required this.state});
@@ -152,6 +326,10 @@ class _StepChip extends StatelessWidget {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Review step (unchanged)
+// ---------------------------------------------------------------------------
+
 class _ReviewStep extends StatelessWidget {
   const _ReviewStep({required this.draft, required this.onContinue});
   final UiTicketOrderDraft draft;
@@ -172,17 +350,20 @@ class _ReviewStep extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text('Order Summary', style: TextStyle(fontWeight: FontWeight.w900)),
+              const Text('Order Summary',
+                  style: TextStyle(fontWeight: FontWeight.w900)),
               const SizedBox(height: 8),
               Text('Adult: ${draft.adult}'),
               Text('Student: ${draft.student}'),
               Text('International: ${draft.international}'),
               const SizedBox(height: 8),
-              Text(draft.donationLabel, style: const TextStyle(color: AppColors.primary)),
+              Text(draft.donationLabel,
+                  style: const TextStyle(color: AppColors.primary)),
               const SizedBox(height: 8),
               Text(
                 draft.totalLabel,
-                style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w900),
+                style:
+                    const TextStyle(fontSize: 20, fontWeight: FontWeight.w900),
               ),
             ],
           ),
@@ -194,39 +375,80 @@ class _ReviewStep extends StatelessWidget {
   }
 }
 
-class _PaymentStep extends StatelessWidget {
-  const _PaymentStep({
-    required this.paychangu,
-    required this.onChanged,
+// ---------------------------------------------------------------------------
+// Visitor info step (replaces old _PaymentStep)
+// ---------------------------------------------------------------------------
+
+class _VisitorInfoStep extends StatelessWidget {
+  const _VisitorInfoStep({
+    required this.formKey,
+    required this.firstNameController,
+    required this.lastNameController,
+    required this.emailController,
     required this.onContinue,
   });
 
-  final bool paychangu;
-  final ValueChanged<bool> onChanged;
+  final GlobalKey<FormState> formKey;
+  final TextEditingController firstNameController;
+  final TextEditingController lastNameController;
+  final TextEditingController emailController;
   final VoidCallback onContinue;
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      children: [
-        RadioListTile<bool>(
-          value: true,
-          groupValue: paychangu,
-          onChanged: (v) => onChanged(v ?? true),
-          title: const Text('PayChangu (Placeholder)'),
-        ),
-        RadioListTile<bool>(
-          value: false,
-          groupValue: paychangu,
-          onChanged: (v) => onChanged(v ?? false),
-          title: const Text('Card / Mobile Money (Placeholder)'),
-        ),
-        const Spacer(),
-        PrimaryCtaButton(label: 'Confirm Payment', onPressed: onContinue),
-      ],
+    return Form(
+      key: formKey,
+      child: Column(
+        children: [
+          TextFormField(
+            controller: firstNameController,
+            decoration: const InputDecoration(
+              labelText: 'First Name',
+              border: OutlineInputBorder(),
+            ),
+            validator: (v) =>
+                (v == null || v.trim().isEmpty) ? 'First name is required' : null,
+          ),
+          const SizedBox(height: 12),
+          TextFormField(
+            controller: lastNameController,
+            decoration: const InputDecoration(
+              labelText: 'Last Name',
+              border: OutlineInputBorder(),
+            ),
+            validator: (v) =>
+                (v == null || v.trim().isEmpty) ? 'Last name is required' : null,
+          ),
+          const SizedBox(height: 12),
+          TextFormField(
+            controller: emailController,
+            keyboardType: TextInputType.emailAddress,
+            decoration: const InputDecoration(
+              labelText: 'Email Address',
+              border: OutlineInputBorder(),
+            ),
+            validator: (v) {
+              if (v == null || v.trim().isEmpty) return 'Email is required';
+              final emailRegex = RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$');
+              if (!emailRegex.hasMatch(v.trim())) return 'Enter a valid email';
+              return null;
+            },
+          ),
+          const Spacer(),
+          PrimaryCtaButton(
+            label: 'Pay with PayChangu',
+            icon: Icons.lock,
+            onPressed: onContinue,
+          ),
+        ],
+      ),
     );
   }
 }
+
+// ---------------------------------------------------------------------------
+// Success step (unchanged)
+// ---------------------------------------------------------------------------
 
 class _SuccessStep extends StatelessWidget {
   const _SuccessStep({required this.onOpenWallet});

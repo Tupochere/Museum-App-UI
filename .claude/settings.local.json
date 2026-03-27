@@ -15,7 +15,15 @@
       "mcp__supabase__execute_sql",
       "mcp__supabase__apply_migration",
       "Bash(flutter pub:*)",
-      "Bash(dart run:*)"
+      "Bash(dart run:*)",
+      "Bash(find 'C:\\\\Museum App UI\\\\mtengatenga_ar' -name *tts* -type f)",
+      "Bash(xargs grep:*)",
+      "WebSearch",
+      "WebFetch(domain:pub.dev)",
+      "Read(//c/Museum App UI/mtengatenga_ar/$LOCALAPPDATA/Pub/Cache/hosted/**)",
+      "Read(//c/Museum App UI/mtengatenga_ar/$HOME/.pub-cache/hosted/**)",
+      "WebFetch(domain:github.com)",
+      "Bash(find 'C:\\\\Museum App UI\\\\mtengatenga_ar\\\\.dart_tool\\\\pub\\\\cache' -path *arcore_flutter_plugin* -type d)"
     ]
   },
   "enableAllProjectMcpServers": true,

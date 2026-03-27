@@ -72,6 +72,9 @@ class UiTicketOrderDraft {
     required this.international,
     required this.donationLabel,
     required this.totalLabel,
+    this.donationAmountUsd = 0,
+    this.totalAmountMwk = 0,
+    this.isMonthlyDonation = false,
   });
 
   final int adult;
@@ -79,6 +82,9 @@ class UiTicketOrderDraft {
   final int international;
   final String donationLabel;
   final String totalLabel;
+  final int donationAmountUsd;
+  final int totalAmountMwk;
+  final bool isMonthlyDonation;
 }
 
 class UiRoutePreview {

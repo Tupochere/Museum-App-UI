@@ -55,6 +55,11 @@ dependencies:
   cupertino_icons: ^1.0.8
   just_audio: ^0.10.5
   speech_to_text: ^7.3.0
+  flutter_onnxruntime: ^1.6.1
+  paychangu_flutter: ^0.0.3
+  qr_flutter: ^4.1.0
+  http: ^1.2.0
+  webview_flutter: ^4.10.0
 
 dev_dependencies:
   flutter_test:
