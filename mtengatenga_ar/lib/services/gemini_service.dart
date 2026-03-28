@@ -86,9 +86,12 @@ class GeminiService {
     );
     if (voiceMode) {
       contextBlock.writeln(
-        ' This response will be spoken aloud, so keep it natural, concise, and easy to follow.'
+        ' This response will be spoken aloud by an English text-to-speech engine, so keep it natural, concise, and easy to follow.'
         ' Avoid lists unless the visitor explicitly asks for them.'
-        ' Lead with the most useful point quickly.',
+        ' Lead with the most useful point quickly.'
+        ' When using Chichewa, Chewa, or other Malawian words, write them phonetically so an English TTS can pronounce them naturally.'
+        ' For example: "Gule Wamkulu" → "Goo-leh Wam-koo-loo", "Mtengatenga" → "Mm-ten-ga-ten-ga", "Nyau" → "Nyow".'
+        ' Place the phonetic version in the text directly — do not include the original spelling alongside it.',
       );
     }
     contextBlock.writeln();

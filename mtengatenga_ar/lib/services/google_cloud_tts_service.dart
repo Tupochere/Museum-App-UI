@@ -17,7 +17,7 @@ class GoogleCloudSpeechClip {
 }
 
 class GoogleCloudTtsService {
-  static const String _defaultVoice = 'en-US-Neural2-F';
+  static const String _defaultVoice = 'en-US-Journey-F';
   static const String _defaultLanguage = 'en-US';
   static const int _maxRetries = 2;
   static const int _sampleRate = 24000;

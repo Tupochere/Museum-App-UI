@@ -1299,6 +1299,18 @@ class _AiGuideScreenState extends State<AiGuideScreen>
     }
 
     final chunk = _speechQueue.removeFirst();
+
+    // Guard: skip chunks whose audio file was already cleaned up or never written.
+    if (!File(chunk.audioPath).existsSync()) {
+      debugPrint('Audio file missing, skipping chunk: ${chunk.audioPath}');
+      if (_speechQueue.isNotEmpty) {
+        await _maybeStartSpeechPlayback(turnId);
+      } else if (_speechStreamDone) {
+        await _settleToWaitingState();
+      }
+      return;
+    }
+
     _activeSpeechChunk = chunk;
     _ttsCompletionArmed = true;
     if (_voiceState == _VoiceState.thinking) {

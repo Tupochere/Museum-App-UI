@@ -99,7 +99,7 @@ app.post('/tts', async (req, res) => {
       input: { text },
       voice: {
         languageCode: languageCode || 'en-US',
-        name: voice || 'en-US-Neural2-F',
+        name: voice || 'en-US-Journey-F',
       },
       audioConfig: {
         audioEncoding: 'LINEAR16',
