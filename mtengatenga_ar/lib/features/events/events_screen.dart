@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../core/models/ui_models.dart';
+import '../../models/notification_post.dart';
+import '../../services/notification_service.dart';
 import '../../theme/app_tokens.dart';
 import 'event_details_screen.dart';
 import 'notification_center_screen.dart';
@@ -12,30 +14,41 @@ class EventsScreen extends StatefulWidget {
 }
 
 class _EventsScreenState extends State<EventsScreen> {
-  int _topTab = 0;
+  int _topTab = 0; // 0 = Upcoming (events), 1 = Past (news)
   int _chip = 0;
 
-  static const _events = [
-    UiEventItem(
-      id: '1',
-      title: 'Traditional Mask Dance',
-      dateLabel: 'Oct 14 • 2:00 PM',
-      location: 'Main Courtyard',
-      description: 'Experience the Gule Wamkulu dance in a guided cultural program.',
-      imageUrl:
-          'https://lh3.googleusercontent.com/aida-public/AB6AXuDpcQhgCSeZEuPVfavw2YvKqDjPkRNoZ75K_I9E5FjAUR8xh-6Pp82znRnl4PpXNCF_qHYkVQ5CAc05yeUAA-7jGdrx9DnFC2YJ53zZ9e6yATbZGKcAwNOEdrweDQ99lo91DlFRg_XBG0_hxrSln1S86RS-8Sd5e3jZ25CkCvPNKIefdba26laJKOu3TD0dTs488NUCD6hKEf8RliwsGLrLj1MxI8Ia1oA_NgdylkfGv8efT_iKXis5WnySgscJw2OdW4O_CU5zbugF',
-      isUnread: true,
-    ),
-    UiEventItem(
-      id: '2',
-      title: 'Clay Modeling Workshop',
-      dateLabel: 'Nov 05 • 11:00 AM',
-      location: 'Workshop Hall',
-      description: 'Hands-on modeling workshop for all ages and school groups.',
-      imageUrl:
-          'https://lh3.googleusercontent.com/aida-public/AB6AXuC-UmbfAmnrecA--7tWC18J1rDwotYU6h1aXPHIQ_lVZc9mfNjLwnbcFulAECun_MggoaXX-7QyrNzJdtf1j5PjIkPCNrPiPoamQ4VNNmS-gcBpbtm79KKZvq0Nihygmr_Ff52c8V6YMl8ykYhttedPNfBrMaCnTbUxaHCWS0dPMXXwhafbz-uCXdzcvN5HLYW2x5_p7JfXNQ95h757zuhQISYo7uonrmH23wxT6Bnst8w_Ctsc7F7vB8tVNSoYHANf1jcUKRj2DcYc',
-    ),
-  ];
+  final _service = NotificationService();
+  List<NotificationPost> _posts = [];
+  bool _loading = true;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadPosts();
+  }
+
+  Future<void> _loadPosts() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    final posts = await _service.fetchAll();
+    if (mounted) {
+      setState(() {
+        _posts = posts;
+        _loading = false;
+      });
+    }
+  }
+
+  List<NotificationPost> get _filtered {
+    if (_topTab == 0) {
+      return _posts.where((p) => p.postType == 'event').toList();
+    } else {
+      return _posts.where((p) => p.postType == 'news').toList();
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -54,27 +67,48 @@ class _EventsScreenState extends State<EventsScreen> {
           ),
         ],
       ),
-      body: ListView(
-        padding: const EdgeInsets.all(AppSpacing.md),
-        children: [
-          _SegmentedTop(index: _topTab, onChanged: (i) => setState(() => _topTab = i)),
-          const SizedBox(height: 12),
-          _CategoryChips(index: _chip, onChanged: (i) => setState(() => _chip = i)),
-          const SizedBox(height: 12),
-          ..._events.map((item) {
-            return Padding(
-              padding: const EdgeInsets.only(bottom: 12),
-              child: _EventCard(
-                item: item,
-                onTap: () {
-                  Navigator.of(context).push(
-                    MaterialPageRoute(builder: (_) => EventDetailsScreen(item: item)),
-                  );
-                },
-              ),
-            );
-          }),
-        ],
+      body: RefreshIndicator(
+        onRefresh: _loadPosts,
+        child: ListView(
+          padding: const EdgeInsets.all(AppSpacing.md),
+          children: [
+            _SegmentedTop(index: _topTab, onChanged: (i) => setState(() => _topTab = i)),
+            const SizedBox(height: 12),
+            _CategoryChips(index: _chip, onChanged: (i) => setState(() => _chip = i)),
+            const SizedBox(height: 12),
+            if (_loading)
+              const Center(child: Padding(
+                padding: EdgeInsets.all(32),
+                child: CircularProgressIndicator(),
+              ))
+            else if (_error != null)
+              Center(child: Text(_error!, style: const TextStyle(color: Colors.red)))
+            else if (_filtered.isEmpty)
+              const Center(
+                child: Padding(
+                  padding: EdgeInsets.all(32),
+                  child: Text('No posts yet. Check back soon.'),
+                ),
+              )
+            else
+              ..._filtered.map((post) {
+                final item = post.toUiEventItem();
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: _EventCard(
+                    item: item,
+                    onTap: () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => EventDetailsScreen(item: item),
+                        ),
+                      );
+                    },
+                  ),
+                );
+              }),
+          ],
+        ),
       ),
     );
   }
