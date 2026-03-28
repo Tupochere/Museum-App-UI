@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:get_it/get_it.dart';
+import '../../services/translation_service.dart';
 import '../../theme/app_tokens.dart';
 import '../ai_guide/ai_guide_screen.dart';
 import 'debug_artifacts_screen.dart';
@@ -15,7 +17,7 @@ class MtengatengaHomeScreen extends StatefulWidget {
 }
 
 class _MtengatengaHomeScreenState extends State<MtengatengaHomeScreen> {
-  bool _isEnglish = true;
+  final _languageState = GetIt.instance<LanguageState>();
 
   @override
   Widget build(BuildContext context) {
@@ -28,9 +30,14 @@ class _MtengatengaHomeScreenState extends State<MtengatengaHomeScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _Header(
-                isEnglish: _isEnglish,
-                onToggle: () => setState(() => _isEnglish = !_isEnglish),
+              ValueListenableBuilder<String>(
+                valueListenable: _languageState,
+                builder: (context, lang, _) => _Header(
+                  isEnglish: lang == 'en',
+                  onToggle: () {
+                    _languageState.setLanguage(lang == 'en' ? 'ny' : 'en');
+                  },
+                ),
               ),
               const SizedBox(height: 18),
               Text(
@@ -176,8 +183,8 @@ class _Header extends StatelessWidget {
             ),
             child: Row(
               children: [
-                _LangChip(active: isEnglish, label: 'EN'),
-                _LangChip(active: !isEnglish, label: 'NY'),
+                _LangChip(active: isEnglish, label: 'EN', flag: '\u{1F1EC}\u{1F1E7}'),
+                _LangChip(active: !isEnglish, label: 'NY', flag: '\u{1F1F2}\u{1F1FC}'),
               ],
             ),
           ),
@@ -188,26 +195,34 @@ class _Header extends StatelessWidget {
 }
 
 class _LangChip extends StatelessWidget {
-  const _LangChip({required this.active, required this.label});
+  const _LangChip({required this.active, required this.label, required this.flag});
 
   final bool active;
   final String label;
+  final String flag;
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
         color: active ? AppColors.secondary : Colors.transparent,
         borderRadius: BorderRadius.circular(999),
       ),
-      child: Text(
-        label,
-        style: TextStyle(
-          fontSize: 12,
-          fontWeight: FontWeight.w900,
-          color: active ? Colors.white : AppColors.textMuted,
-        ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(flag, style: const TextStyle(fontSize: 14)),
+          const SizedBox(width: 4),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w900,
+              color: active ? Colors.white : AppColors.textMuted,
+            ),
+          ),
+        ],
       ),
     );
   }

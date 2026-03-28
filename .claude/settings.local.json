@@ -23,7 +23,10 @@
       "Read(//c/Museum App UI/mtengatenga_ar/$LOCALAPPDATA/Pub/Cache/hosted/**)",
       "Read(//c/Museum App UI/mtengatenga_ar/$HOME/.pub-cache/hosted/**)",
       "WebFetch(domain:github.com)",
-      "Bash(find 'C:\\\\Museum App UI\\\\mtengatenga_ar\\\\.dart_tool\\\\pub\\\\cache' -path *arcore_flutter_plugin* -type d)"
+      "Bash(find 'C:\\\\Museum App UI\\\\mtengatenga_ar\\\\.dart_tool\\\\pub\\\\cache' -path *arcore_flutter_plugin* -type d)",
+      "Bash(find 'C:/Museum App UI/mtengatenga_ar' -name index.js -not -path */node_modules/* -not -path */build/*)",
+      "Bash(find 'C:/Museum App UI/mtengatenga_ar' -name *.js -not -path */node_modules/* -not -path */build/* -not -path */web/*)",
+      "Bash(find 'C:/Museum App UI' -name index.js -not -path */node_modules/* -not -path */build/*)"
     ]
   },
   "enableAllProjectMcpServers": true,

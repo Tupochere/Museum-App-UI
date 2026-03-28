@@ -2,6 +2,7 @@ const express = require('express');
 const functions = require('@google-cloud/functions-framework');
 const { VertexAI } = require('@google-cloud/vertexai');
 const { TextToSpeechClient } = require('@google-cloud/text-to-speech');
+const { TranslationServiceClient } = require('@google-cloud/translate');
 
 const app = express();
 app.use(express.json({ limit: '1mb' }));
@@ -112,6 +113,36 @@ app.post('/tts', async (req, res) => {
   } catch (err) {
     console.error('POST /tts error:', err.message || err);
     res.status(500).json({ error: err.message || 'Internal server error.' });
+  }
+});
+
+// ── POST /translate — Cloud Translation ─────────────────────────────────────
+
+const translationClient = new TranslationServiceClient();
+
+app.post('/translate', async (req, res) => {
+  const { text, targetLanguage } = req.body;
+  if (!text || !targetLanguage) {
+    return res.status(400).json({ error: 'Missing "text" or "targetLanguage".' });
+  }
+
+  if (targetLanguage === 'en') {
+    return res.json({ translatedText: text });
+  }
+
+  try {
+    const [response] = await translationClient.translateText({
+      parent: `projects/${PROJECT_ID}/locations/global`,
+      contents: [text],
+      targetLanguageCode: targetLanguage,
+      mimeType: 'text/plain',
+    });
+
+    const translatedText = response.translations[0].translatedText;
+    res.json({ translatedText });
+  } catch (err) {
+    console.error('POST /translate error:', err.message || err);
+    res.status(500).json({ error: err.message || 'Translation failed.' });
   }
 });
 

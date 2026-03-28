@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:get_it/get_it.dart';
 import '../../core/ui/states/state_view.dart';
+import '../../services/translation_service.dart';
 import '../../theme/app_tokens.dart';
 import '../events/notification_center_screen.dart';
 import '../tickets/ticket_wallet_screen.dart';
@@ -12,7 +14,7 @@ class ProfilePreferencesScreen extends StatefulWidget {
 }
 
 class _ProfilePreferencesScreenState extends State<ProfilePreferencesScreen> {
-  bool _english = true;
+  final _languageState = GetIt.instance<LanguageState>();
   bool _largeText = false;
   bool _highContrast = false;
   bool _eventAlerts = true;
@@ -28,15 +30,39 @@ class _ProfilePreferencesScreenState extends State<ProfilePreferencesScreen> {
         children: [
           const OfflineBanner(),
           const SizedBox(height: 12),
-          _Section(
-            title: 'Language',
-            child: SegmentedButton<bool>(
-              segments: const [
-                ButtonSegment(value: true, label: Text('English')),
-                ButtonSegment(value: false, label: Text('Chichewa')),
-              ],
-              selected: {_english},
-              onSelectionChanged: (value) => setState(() => _english = value.first),
+          ValueListenableBuilder<String>(
+            valueListenable: _languageState,
+            builder: (context, lang, _) => _Section(
+              title: 'Language',
+              child: SegmentedButton<String>(
+                segments: const [
+                  ButtonSegment(
+                    value: 'en',
+                    label: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text('\u{1F1EC}\u{1F1E7}', style: TextStyle(fontSize: 18)),
+                        SizedBox(width: 6),
+                        Text('English'),
+                      ],
+                    ),
+                  ),
+                  ButtonSegment(
+                    value: 'ny',
+                    label: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text('\u{1F1F2}\u{1F1FC}', style: TextStyle(fontSize: 18)),
+                        SizedBox(width: 6),
+                        Text('Chichewa'),
+                      ],
+                    ),
+                  ),
+                ],
+                selected: {lang},
+                onSelectionChanged: (value) =>
+                    _languageState.setLanguage(value.first),
+              ),
             ),
           ),
           _Section(

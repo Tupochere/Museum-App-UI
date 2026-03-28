@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:get_it/get_it.dart';
 import '../../core/domain/entities/artifact.model.dart';
 import '../../features/ai_guide/ai_guide_screen.dart';
+import '../../services/translation_service.dart';
 import '../../theme/app_tokens.dart';
 
 class ArtifactDetailsScreen extends StatefulWidget {
@@ -500,24 +502,78 @@ class _TabContent extends StatelessWidget {
   }
 }
 
-class _OverviewTab extends StatelessWidget {
+class _OverviewTab extends StatefulWidget {
   const _OverviewTab({this.artifact});
 
   final Artifact? artifact;
 
   @override
-  Widget build(BuildContext context) {
-    final description = artifact?.description ?? 'No description is available for this artifact yet.';
-    final significance = artifact?.culturalSignificance ??
-        'Cultural significance details are not available yet for this artifact.';
-    final notes = artifact?.additionalNotes ?? 'Additional notes are not available.';
+  State<_OverviewTab> createState() => _OverviewTabState();
+}
 
+class _OverviewTabState extends State<_OverviewTab> {
+  final _languageState = GetIt.instance<LanguageState>();
+  final _translationService = GetIt.instance<TranslationService>();
+
+  late String _description;
+  late String _significance;
+  late String _notes;
+
+  @override
+  void initState() {
+    super.initState();
+    _resetToEnglish();
+    _languageState.addListener(_onLanguageChanged);
+    if (!_languageState.isEnglish) _translateAll();
+  }
+
+  @override
+  void dispose() {
+    _languageState.removeListener(_onLanguageChanged);
+    super.dispose();
+  }
+
+  void _resetToEnglish() {
+    _description = widget.artifact?.description ?? 'No description is available for this artifact yet.';
+    _significance = widget.artifact?.culturalSignificance ??
+        'Cultural significance details are not available yet for this artifact.';
+    _notes = widget.artifact?.additionalNotes ?? 'Additional notes are not available.';
+  }
+
+  void _onLanguageChanged() {
+    if (_languageState.isEnglish) {
+      setState(_resetToEnglish);
+    } else {
+      _translateAll();
+    }
+  }
+
+  Future<void> _translateAll() async {
+    final origDescription = widget.artifact?.description ?? 'No description is available for this artifact yet.';
+    final origSignificance = widget.artifact?.culturalSignificance ??
+        'Cultural significance details are not available yet for this artifact.';
+    final origNotes = widget.artifact?.additionalNotes ?? 'Additional notes are not available.';
+    final results = await Future.wait([
+      _translationService.translate(origDescription),
+      _translationService.translate(origSignificance),
+      _translationService.translate(origNotes),
+    ]);
+    if (!mounted) return;
+    setState(() {
+      _description = results[0];
+      _significance = results[1];
+      _notes = results[2];
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const SizedBox(height: 10),
         Text(
-          description,
+          _description,
           style: const TextStyle(
             color: AppColors.textMain,
             fontSize: 18,
@@ -536,7 +592,7 @@ class _OverviewTab extends StatelessWidget {
         ),
         const SizedBox(height: 10),
         Text(
-          significance,
+          _significance,
           style: const TextStyle(
             color: AppColors.textMain,
             fontSize: 16,
@@ -545,10 +601,10 @@ class _OverviewTab extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 14),
-        _InfoBox(artifact: artifact),
+        _InfoBox(artifact: widget.artifact),
         const SizedBox(height: 18),
         Text(
-          notes,
+          _notes,
           style: const TextStyle(
             color: AppColors.textMain,
             fontSize: 16,
@@ -601,14 +657,61 @@ class _InfoBox extends StatelessWidget {
   }
 }
 
-class _HistoryTab extends StatelessWidget {
+class _HistoryTab extends StatefulWidget {
   const _HistoryTab({this.artifact});
 
   final Artifact? artifact;
 
   @override
+  State<_HistoryTab> createState() => _HistoryTabState();
+}
+
+class _HistoryTabState extends State<_HistoryTab> {
+  final _languageState = GetIt.instance<LanguageState>();
+  final _translationService = GetIt.instance<TranslationService>();
+
+  List<String> _translatedEvents = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _resetToEnglish();
+    _languageState.addListener(_onLanguageChanged);
+    if (!_languageState.isEnglish) _translateAll();
+  }
+
+  @override
+  void dispose() {
+    _languageState.removeListener(_onLanguageChanged);
+    super.dispose();
+  }
+
+  void _resetToEnglish() {
+    final timeline = widget.artifact?.timeline ?? const <TimelineEvent>[];
+    _translatedEvents = timeline.map((e) => e.event).toList();
+  }
+
+  void _onLanguageChanged() {
+    if (_languageState.isEnglish) {
+      setState(_resetToEnglish);
+    } else {
+      _translateAll();
+    }
+  }
+
+  Future<void> _translateAll() async {
+    final timeline = widget.artifact?.timeline ?? const <TimelineEvent>[];
+    if (timeline.isEmpty) return;
+    final results = await Future.wait(
+      timeline.map((e) => _translationService.translate(e.event)),
+    );
+    if (!mounted) return;
+    setState(() => _translatedEvents = results);
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final timeline = artifact?.timeline ?? const <TimelineEvent>[];
+    final timeline = widget.artifact?.timeline ?? const <TimelineEvent>[];
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -618,7 +721,11 @@ class _HistoryTab extends StatelessWidget {
         const SizedBox(height: 10),
         if (timeline.isEmpty)
           const _TimelineItem(year: 'N/A', text: 'No timeline information available for this artifact.'),
-        for (final event in timeline) _TimelineItem(year: event.year, text: event.event),
+        for (int i = 0; i < timeline.length; i++)
+          _TimelineItem(
+            year: timeline[i].year,
+            text: i < _translatedEvents.length ? _translatedEvents[i] : timeline[i].event,
+          ),
         const SizedBox(height: 24),
       ],
     );

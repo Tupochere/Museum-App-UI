@@ -7,6 +7,7 @@ import '../domain/repositories/artifact_repository.dart';
 import '../domain/repositories/room_repository.dart';
 import 'scan_history_service.dart';
 import 'supabase_service.dart';
+import '../../services/translation_service.dart';
 
 class ServiceLocator {
   static final GetIt _getIt = GetIt.instance;
@@ -30,6 +31,13 @@ class ServiceLocator {
     );
     _getIt.registerLazySingleton<ScanHistoryService>(
       ScanHistoryService.new,
+    );
+
+    final languageState = LanguageState();
+    await languageState.load();
+    _getIt.registerSingleton<LanguageState>(languageState);
+    _getIt.registerLazySingleton<TranslationService>(
+      () => TranslationService(languageState),
     );
   }
 }

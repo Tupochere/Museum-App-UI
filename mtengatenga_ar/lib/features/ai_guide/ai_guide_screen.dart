@@ -13,7 +13,9 @@ import 'package:speech_to_text/speech_recognition_error.dart';
 import 'package:speech_to_text/speech_recognition_result.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import '../../core/domain/entities/artifact.model.dart';
+import 'package:get_it/get_it.dart';
 import '../../services/gemini_service.dart';
+import '../../services/translation_service.dart';
 import '../../services/elevenlabs_tts_service.dart';
 import '../../services/gemini_tts_service.dart';
 import '../../services/google_cloud_tts_service.dart';
@@ -206,6 +208,7 @@ class AiGuideScreen extends StatefulWidget {
 class _AiGuideScreenState extends State<AiGuideScreen>
     with TickerProviderStateMixin {
   // ── Services ──────────────────────────────────────────────────────────────
+  final _translationService = GetIt.instance<TranslationService>();
   final _geminiService = GeminiService();
   final _geminiTtsService = GeminiTtsService();
   final _googleCloudTtsService = GoogleCloudTtsService();
@@ -1257,7 +1260,8 @@ class _AiGuideScreenState extends State<AiGuideScreen>
         return;
       }
       try {
-        final clip = await _synthesizeSpeech(chunkText);
+        final translatedChunk = await _translationService.translate(chunkText);
+        final clip = await _synthesizeSpeech(translatedChunk);
         if (!mounted || turnId != _voiceTurnId) return;
         if (_geminiTtsFailed) {
           _unsynthesizedText = '$_unsynthesizedText $chunkText'.trimLeft();
@@ -1273,7 +1277,7 @@ class _AiGuideScreenState extends State<AiGuideScreen>
         setState(() {
           _speechQueue.add(
             _SpeechChunk(
-              text: chunkText,
+              text: translatedChunk,
               duration: clip.duration,
               audioPath: file.path,
             ),
@@ -1782,16 +1786,18 @@ class _AiGuideScreenState extends State<AiGuideScreen>
           userText,
           List.from(_conversationHistory),
         )
-        .then((response) {
+        .then((response) async {
           if (!mounted) return;
           _conversationHistory.add({'role': 'user', 'content': userText});
           _conversationHistory.add({'role': 'model', 'content': response});
           if (_conversationHistory.length > 20) {
             _conversationHistory.removeRange(0, 2);
           }
+          final displayText = await _translationService.translate(response);
+          if (!mounted) return;
           setState(() {
             _isTyping = false;
-            _messages.add(_Msg(text: response, isUser: false));
+            _messages.add(_Msg(text: displayText, isUser: false));
           });
           _scrollToBottom();
         });
@@ -1961,10 +1967,10 @@ class _AiGuideScreenState extends State<AiGuideScreen>
         if (_isOffline) _buildOfflineBanner(),
         if (_tourMode) _buildTourBanner(),
         Expanded(child: _messages.isEmpty ? _buildEmptyState() : _buildChat()),
-        if (_isTyping) _buildTypingIndicator(),
         _Composer(
           onSend: _isOffline ? (_) {} : _sendMessage,
           onVoiceTap: _enterVoice,
+          languageState: GetIt.instance<LanguageState>(),
           disabled: _isOffline,
         ),
       ],
@@ -1995,12 +2001,13 @@ class _AiGuideScreenState extends State<AiGuideScreen>
     );
   }
 
-  Widget _buildTypingIndicator() {
+  Widget _buildShimmerThinking() {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+      padding: const EdgeInsets.only(bottom: 16),
       child: Align(
         alignment: Alignment.centerLeft,
         child: Row(
+          mainAxisSize: MainAxisSize.min,
           children: [
             Container(
               width: 22,
@@ -2016,14 +2023,7 @@ class _AiGuideScreenState extends State<AiGuideScreen>
               ),
             ),
             const SizedBox(width: 8),
-            const Text(
-              'Thinking…',
-              style: TextStyle(
-                color: AppColors.textMuted,
-                fontSize: 13,
-                fontStyle: FontStyle.italic,
-              ),
-            ),
+            const _ShimmerText('Thinking…'),
           ],
         ),
       ),
@@ -2258,11 +2258,15 @@ class _AiGuideScreenState extends State<AiGuideScreen>
   }
 
   Widget _buildChat() {
+    final itemCount = _messages.length + (_isTyping ? 1 : 0);
     return ListView.builder(
       controller: _scrollCtrl,
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-      itemCount: _messages.length,
+      itemCount: itemCount,
       itemBuilder: (_, i) {
+        if (i == _messages.length && _isTyping) {
+          return _buildShimmerThinking();
+        }
         final m = _messages[i];
         return m.isUser ? _buildUserBubble(m) : _buildAiBubble(m);
       },
@@ -2940,14 +2944,77 @@ class _SuggestionChip extends StatelessWidget {
 // ─────────────────────────────────────────────────────────────────────────────
 // Text composer (light theme)
 // ─────────────────────────────────────────────────────────────────────────────
+class _ShimmerText extends StatefulWidget {
+  const _ShimmerText(this.text);
+  final String text;
+
+  @override
+  State<_ShimmerText> createState() => _ShimmerTextState();
+}
+
+class _ShimmerTextState extends State<_ShimmerText>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1500),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _ctrl,
+      builder: (context, child) {
+        return ShaderMask(
+          shaderCallback: (bounds) {
+            return LinearGradient(
+              begin: Alignment(-1.0 + 3.0 * _ctrl.value, 0),
+              end: Alignment(-1.0 + 3.0 * _ctrl.value + 1.0, 0),
+              colors: const [
+                AppColors.textMuted,
+                AppColors.primary,
+                AppColors.textMuted,
+              ],
+              stops: const [0.0, 0.5, 1.0],
+            ).createShader(bounds);
+          },
+          blendMode: BlendMode.srcIn,
+          child: child!,
+        );
+      },
+      child: Text(
+        widget.text,
+        style: const TextStyle(
+          fontSize: 13,
+          fontStyle: FontStyle.italic,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    );
+  }
+}
+
 class _Composer extends StatefulWidget {
   const _Composer({
     required this.onSend,
     required this.onVoiceTap,
+    required this.languageState,
     this.disabled = false,
   });
   final ValueChanged<String> onSend;
   final VoidCallback onVoiceTap;
+  final LanguageState languageState;
   final bool disabled;
 
   @override
@@ -3023,7 +3090,47 @@ class _ComposerState extends State<_Composer> {
             const SizedBox(height: 10),
             Row(
               children: [
-                const Icon(Icons.add, color: AppColors.textMuted, size: 22),
+                ValueListenableBuilder<String>(
+                  valueListenable: widget.languageState,
+                  builder: (context, lang, _) {
+                    final isEn = lang == 'en';
+                    return GestureDetector(
+                      onTap: () => widget.languageState.setLanguage(isEn ? 'ny' : 'en'),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: AppColors.primary.withValues(alpha: 0.08),
+                          borderRadius: BorderRadius.circular(999),
+                          border: Border.all(color: AppColors.primary.withValues(alpha: 0.20)),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              isEn ? '\u{1F1EC}\u{1F1E7}' : '\u{1F1F2}\u{1F1FC}',
+                              style: const TextStyle(fontSize: 14),
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              isEn ? 'EN' : 'NY',
+                              style: const TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w800,
+                                color: AppColors.primary,
+                              ),
+                            ),
+                            const SizedBox(width: 2),
+                            Icon(
+                              Icons.swap_horiz,
+                              size: 14,
+                              color: AppColors.primary.withValues(alpha: 0.60),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
                 const Spacer(),
                 const Icon(
                   Icons.mic_none,
