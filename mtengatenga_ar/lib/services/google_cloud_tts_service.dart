@@ -22,7 +22,18 @@ class GoogleCloudTtsService {
   static const int _maxRetries = 2;
   static const int _sampleRate = 24000;
 
+  // ── Cloud Function proxy ────────────────────────────────────────────────
+
+  String get _cloudFunctionUrl =>
+      dotenv.env['CLOUD_FUNCTION_URL']?.trim() ?? '';
+
+  bool get _useCloudFunction => _cloudFunctionUrl.isNotEmpty;
+
   Future<GoogleCloudSpeechClip> synthesizeSpeech(String text) async {
+    if (_useCloudFunction) {
+      return _synthesizeViaCloudFunction(text);
+    }
+
     final apiKey = _resolveApiKey();
     if (apiKey.isEmpty) {
       throw StateError('Missing API key for Google Cloud TTS.');
@@ -117,6 +128,43 @@ class GoogleCloudTtsService {
     throw StateError(
       'Google Cloud TTS failed before any attempt completed.',
     );
+  }
+
+  // ── Cloud Function helper ────────────────────────────────────────────────
+
+  Future<GoogleCloudSpeechClip> _synthesizeViaCloudFunction(
+    String text,
+  ) async {
+    final client = HttpClient();
+    try {
+      final request = await client.postUrl(
+        Uri.parse('$_cloudFunctionUrl/tts'),
+      );
+      request.headers.contentType = ContentType.json;
+      request.add(
+        utf8.encode(
+          jsonEncode({
+            'text': text,
+            'voice': _resolveVoice(),
+            'languageCode': _resolveLanguage(),
+          }),
+        ),
+      );
+
+      final response = await request.close();
+      final body = await utf8.decoder.bind(response).join();
+
+      if (response.statusCode != 200) {
+        throw HttpException(
+          'Cloud function /tts failed (${response.statusCode}): '
+          '${_extractErrorMessage(body)}',
+        );
+      }
+
+      return _extractSpeechClip(body);
+    } finally {
+      client.close(force: true);
+    }
   }
 
   // ── Config ───────────────────────────────────────────────────────────────

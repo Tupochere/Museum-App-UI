@@ -1,3 +1,5 @@
+import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
@@ -10,6 +12,13 @@ class GeminiService {
   static const int _maxRetries = 3;
 
   GeminiService();
+
+  // ── Cloud Function proxy ────────────────────────────────────────────────
+
+  String get _cloudFunctionUrl =>
+      dotenv.env['CLOUD_FUNCTION_URL']?.trim() ?? '';
+
+  bool get _useCloudFunction => _cloudFunctionUrl.isNotEmpty;
 
   GenerativeModel _buildModel() {
     final apiKey = dotenv.env['GEMINI_API_KEY'] ?? '';
@@ -122,6 +131,10 @@ class GeminiService {
   ) async {
     final prompt = _buildPrompt(artifact, userMessage, history);
 
+    if (_useCloudFunction) {
+      return _chatViaCloudFunction(prompt, artifact);
+    }
+
     for (var attempt = 0; attempt <= _maxRetries; attempt++) {
       try {
         final model = _buildModel();
@@ -190,6 +203,11 @@ class GeminiService {
       voiceMode: true,
     );
 
+    if (_useCloudFunction) {
+      yield* _streamViaCloudFunction(prompt);
+      return;
+    }
+
     for (var attempt = 0; attempt <= _maxRetries; attempt++) {
       var hasYielded = false;
       try {
@@ -234,6 +252,89 @@ class GeminiService {
       return artifact.description;
     }
     return 'Welcome to Mtengatenga Cultural Museum! I\'m here to help you explore Malawian heritage. What would you like to know?';
+  }
+
+  // ── Cloud Function helpers ───────────────────────────────────────────────
+
+  Future<String> _chatViaCloudFunction(
+    String prompt,
+    Artifact artifact,
+  ) async {
+    final client = HttpClient();
+    try {
+      final request = await client.postUrl(
+        Uri.parse('$_cloudFunctionUrl/ai-chat'),
+      );
+      request.headers.contentType = ContentType.json;
+      request.add(utf8.encode(jsonEncode({'prompt': prompt})));
+
+      final response = await request.close();
+      final body = await utf8.decoder.bind(response).join();
+
+      if (response.statusCode != 200) {
+        debugPrint(
+          'Cloud function /ai-chat failed (${response.statusCode}): $body',
+        );
+        return _fallback(artifact);
+      }
+
+      final decoded = jsonDecode(body) as Map<String, dynamic>;
+      final text = decoded['text'] as String?;
+      if (text == null || text.trim().isEmpty) return _fallback(artifact);
+      return text.trim();
+    } catch (e, st) {
+      debugPrint('Cloud function /ai-chat error: $e');
+      debugPrintStack(stackTrace: st);
+      return _fallback(artifact);
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  Stream<String> _streamViaCloudFunction(String prompt) async* {
+    final client = HttpClient();
+    try {
+      final request = await client.postUrl(
+        Uri.parse('$_cloudFunctionUrl/ai-chat-stream'),
+      );
+      request.headers.contentType = ContentType.json;
+      request.add(utf8.encode(jsonEncode({'prompt': prompt})));
+
+      final response = await request.close();
+
+      if (response.statusCode != 200) {
+        final body = await utf8.decoder.bind(response).join();
+        throw HttpException(
+          'Cloud function /ai-chat-stream failed '
+          '(${response.statusCode}): $body',
+        );
+      }
+
+      // Parse SSE: each event is "data: <json>\n\n"
+      var buffer = '';
+      await for (final chunk in utf8.decoder.bind(response)) {
+        buffer += chunk;
+        while (buffer.contains('\n\n')) {
+          final idx = buffer.indexOf('\n\n');
+          final event = buffer.substring(0, idx).trim();
+          buffer = buffer.substring(idx + 2);
+
+          if (!event.startsWith('data: ')) continue;
+          final payload = event.substring(6);
+          if (payload == '[DONE]') return;
+
+          try {
+            final decoded = jsonDecode(payload) as Map<String, dynamic>;
+            final text = decoded['text'] as String?;
+            if (text != null && text.isNotEmpty) yield text;
+          } catch (_) {
+            // Skip malformed SSE events.
+          }
+        }
+      }
+    } finally {
+      client.close(force: true);
+    }
   }
 
   static final museumGuideArtifact = Artifact(
