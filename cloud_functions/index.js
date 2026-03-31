@@ -217,6 +217,71 @@ app.post('/embed-query', async (req, res) => {
   }
 });
 
+// ── POST /embed-single — Embed a single artifact by ID ─────────────────────
+
+app.post('/embed-single', async (req, res) => {
+  const { id } = req.body;
+  if (!id) {
+    return res.status(400).json({ error: 'Missing "id" in request body.' });
+  }
+
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const supabaseKey = process.env.SUPABASE_SERVICE_KEY;
+  if (!supabaseUrl || !supabaseKey) {
+    return res.status(500).json({ error: 'SUPABASE_URL or SUPABASE_SERVICE_KEY not set.' });
+  }
+
+  try {
+    const fetchRes = await fetch(
+      `${supabaseUrl}/rest/v1/artifacts?id=eq.${id}&select=id,name,subtitle,category,period,description,cultural_significance,additional_notes,ai_context,location`,
+      {
+        headers: {
+          'apikey': supabaseKey,
+          'Authorization': `Bearer ${supabaseKey}`,
+        },
+      }
+    );
+    const artifacts = await fetchRes.json();
+    if (!artifacts || artifacts.length === 0) {
+      return res.status(404).json({ error: 'Artifact not found.' });
+    }
+
+    const artifact = artifacts[0];
+    const doc = [
+      artifact.name,
+      artifact.subtitle,
+      artifact.category,
+      artifact.period ? `Period: ${artifact.period}` : null,
+      artifact.description,
+      artifact.cultural_significance ? `Cultural Significance: ${artifact.cultural_significance}` : null,
+      artifact.additional_notes,
+      artifact.ai_context,
+      artifact.location ? `Location: ${artifact.location}` : null,
+    ].filter(Boolean).join('. ');
+
+    const embedding = await generateEmbedding(doc);
+
+    await fetch(
+      `${supabaseUrl}/rest/v1/artifacts?id=eq.${id}`,
+      {
+        method: 'PATCH',
+        headers: {
+          'apikey': supabaseKey,
+          'Authorization': `Bearer ${supabaseKey}`,
+          'Content-Type': 'application/json',
+          'Prefer': 'return=minimal',
+        },
+        body: JSON.stringify({ embedding: JSON.stringify(embedding) }),
+      }
+    );
+
+    res.json({ status: 'ok', id: artifact.id, name: artifact.name });
+  } catch (err) {
+    console.error('POST /embed-single error:', err.message || err);
+    res.status(500).json({ error: err.message || 'Single embedding failed.' });
+  }
+});
+
 // ── POST /embed-artifacts — One-time batch embedding ────────────────────────
 
 app.post('/embed-artifacts', async (req, res) => {
