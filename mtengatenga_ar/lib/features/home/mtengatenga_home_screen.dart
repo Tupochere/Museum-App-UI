@@ -3,11 +3,11 @@ import 'package:get_it/get_it.dart';
 import '../../services/translation_service.dart';
 import '../../theme/app_tokens.dart';
 import '../ai_guide/ai_guide_screen.dart';
-import 'debug_artifacts_screen.dart';
 import '../events/events_screen.dart';
 import '../map/indoor_navigation_screen.dart';
 import '../scan/scan_screen.dart';
 import '../tickets/tickets_donation_screen.dart';
+import '../search/search_screen.dart';
 
 class MtengatengaHomeScreen extends StatefulWidget {
   const MtengatengaHomeScreen({super.key});
@@ -48,6 +48,33 @@ class _MtengatengaHomeScreenState extends State<MtengatengaHomeScreen> {
               Text(
                 "Explore Malawi's\nHidden Heritage",
                 style: AppText.heroTitle.copyWith(color: AppColors.textMain),
+              ),
+              const SizedBox(height: 16),
+              InkWell(
+                onTap: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const SearchScreen()),
+                  );
+                },
+                borderRadius: BorderRadius.circular(AppRadius.md),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                  decoration: BoxDecoration(
+                    color: AppColors.surfaceCard,
+                    borderRadius: BorderRadius.circular(AppRadius.md),
+                    border: Border.all(color: AppColors.surfaceBorder),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.search, color: AppColors.textMuted, size: 20),
+                      const SizedBox(width: 12),
+                      Text(
+                        'Search artifacts...',
+                        style: AppText.tileSubtitle.copyWith(color: AppColors.textMuted),
+                      ),
+                    ],
+                  ),
+                ),
               ),
               const SizedBox(height: 22),
               _ScanCard(
@@ -107,20 +134,6 @@ class _MtengatengaHomeScreenState extends State<MtengatengaHomeScreen> {
                     },
                   ),
                 ],
-              ),
-              const SizedBox(height: 18),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: () {
-                    Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (_) => const DebugArtifactsScreen(),
-                      ),
-                    );
-                  },
-                  child: const Text('Test Supabase Connection'),
-                ),
               ),
             ],
           ),
@@ -265,7 +278,7 @@ class _ScanCard extends StatelessWidget {
             ),
             const SizedBox(height: 6),
             Text(
-              'Point camera to discover history',
+              'Scan QR or identify objects',
               style: AppText.cardSubtitle.copyWith(color: Colors.white.withOpacity(0.90)),
               textAlign: TextAlign.center,
             ),

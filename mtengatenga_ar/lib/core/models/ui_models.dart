@@ -1,3 +1,5 @@
+enum ScanMode { qr, vision }
+
 enum ScanViewState {
   searching,
   found,
@@ -5,6 +7,10 @@ enum ScanViewState {
   permissionDenied,
   lowLight,
   noMatch,
+  visionCapturing,
+  visionAnalyzing,
+  visionFound,
+  visionNoMatch,
 }
 
 enum AiGuideViewState { empty, conversation, listening, error }

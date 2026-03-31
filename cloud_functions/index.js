@@ -3,9 +3,10 @@ const functions = require('@google-cloud/functions-framework');
 const { VertexAI } = require('@google-cloud/vertexai');
 const { TextToSpeechClient } = require('@google-cloud/text-to-speech');
 const { TranslationServiceClient } = require('@google-cloud/translate');
+const { GoogleAuth } = require('google-auth-library');
 
 const app = express();
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({ limit: '10mb' }));
 
 // ── Vertex AI setup ─────────────────────────────────────────────────────────
 
@@ -21,15 +22,27 @@ function getModel() {
 // ── POST /ai-chat — non-streaming text generation ───────────────────────────
 
 app.post('/ai-chat', async (req, res) => {
-  const { prompt } = req.body;
+  const { prompt, image } = req.body;
   if (!prompt) {
     return res.status(400).json({ error: 'Missing "prompt" in request body.' });
   }
 
   try {
     const model = getModel();
+
+    const parts = [];
+    if (image && image.data && image.mimeType) {
+      parts.push({
+        inlineData: {
+          mimeType: image.mimeType,
+          data: image.data,
+        },
+      });
+    }
+    parts.push({ text: prompt });
+
     const result = await model.generateContent({
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      contents: [{ role: 'user', parts }],
     });
 
     const text = result.response?.candidates?.[0]?.content?.parts?.[0]?.text;
@@ -143,6 +156,134 @@ app.post('/translate', async (req, res) => {
   } catch (err) {
     console.error('POST /translate error:', err.message || err);
     res.status(500).json({ error: err.message || 'Translation failed.' });
+  }
+});
+
+// ── POST /embed-query — Generate text embedding via Vertex AI ───────────────
+
+async function generateEmbedding(text) {
+  const auth = new GoogleAuth();
+  const client = await auth.getClient();
+  const token = await client.getAccessToken();
+
+  // Try models in order: text-embedding-005, text-embedding-004, textembedding-gecko@003
+  const models = ['text-embedding-005', 'text-embedding-004', 'textembedding-gecko@003'];
+
+  for (const model of models) {
+    const url = `https://${LOCATION}-aiplatform.googleapis.com/v1/projects/${PROJECT_ID}/locations/${LOCATION}/publishers/google/models/${model}:predict`;
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token.token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        instances: [{ content: text }],
+      }),
+    });
+
+    if (response.ok) {
+      const data = await response.json();
+      return data.predictions[0].embeddings.values;
+    }
+
+    // If 404 (model not found), try next model
+    if (response.status === 404) {
+      console.log(`Embedding model ${model} not found, trying next...`);
+      continue;
+    }
+
+    // Other error — throw
+    const body = await response.text();
+    throw new Error(`Embedding API error (${response.status}): ${body}`);
+  }
+
+  throw new Error('No embedding model available. Enable Vertex AI API: gcloud services enable aiplatform.googleapis.com');
+}
+
+app.post('/embed-query', async (req, res) => {
+  const { text } = req.body;
+  if (!text) {
+    return res.status(400).json({ error: 'Missing "text" in request body.' });
+  }
+
+  try {
+    const embedding = await generateEmbedding(text);
+    res.json({ embedding });
+  } catch (err) {
+    console.error('POST /embed-query error:', err.message || err);
+    res.status(500).json({ error: err.message || 'Embedding generation failed.' });
+  }
+});
+
+// ── POST /embed-artifacts — One-time batch embedding ────────────────────────
+
+app.post('/embed-artifacts', async (req, res) => {
+  const { confirm } = req.body;
+  if (confirm !== 'yes-embed-all') {
+    return res.status(400).json({ error: 'Send { "confirm": "yes-embed-all" } to proceed.' });
+  }
+
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const supabaseKey = process.env.SUPABASE_SERVICE_KEY;
+  if (!supabaseUrl || !supabaseKey) {
+    return res.status(500).json({ error: 'SUPABASE_URL or SUPABASE_SERVICE_KEY not set.' });
+  }
+
+  try {
+    const listRes = await fetch(
+      `${supabaseUrl}/rest/v1/artifacts?select=id,name,subtitle,category,period,description,cultural_significance,additional_notes,ai_context,location`,
+      {
+        headers: {
+          'apikey': supabaseKey,
+          'Authorization': `Bearer ${supabaseKey}`,
+        },
+      }
+    );
+    const artifacts = await listRes.json();
+
+    const results = [];
+    for (const artifact of artifacts) {
+      const doc = [
+        artifact.name,
+        artifact.subtitle,
+        artifact.category,
+        artifact.period ? `Period: ${artifact.period}` : null,
+        artifact.description,
+        artifact.cultural_significance ? `Cultural Significance: ${artifact.cultural_significance}` : null,
+        artifact.additional_notes,
+        artifact.ai_context,
+        artifact.location ? `Location: ${artifact.location}` : null,
+      ].filter(Boolean).join('. ');
+
+      try {
+        const embedding = await generateEmbedding(doc);
+
+        await fetch(
+          `${supabaseUrl}/rest/v1/artifacts?id=eq.${artifact.id}`,
+          {
+            method: 'PATCH',
+            headers: {
+              'apikey': supabaseKey,
+              'Authorization': `Bearer ${supabaseKey}`,
+              'Content-Type': 'application/json',
+              'Prefer': 'return=minimal',
+            },
+            body: JSON.stringify({ embedding: JSON.stringify(embedding) }),
+          }
+        );
+
+        results.push({ id: artifact.id, name: artifact.name, status: 'ok' });
+      } catch (err) {
+        results.push({ id: artifact.id, name: artifact.name, status: 'error', error: err.message });
+      }
+    }
+
+    res.json({ embedded: results.filter(r => r.status === 'ok').length, total: artifacts.length, results });
+  } catch (err) {
+    console.error('POST /embed-artifacts error:', err.message || err);
+    res.status(500).json({ error: err.message || 'Batch embedding failed.' });
   }
 });
 
