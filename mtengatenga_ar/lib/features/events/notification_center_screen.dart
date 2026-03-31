@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import '../../core/services/service_locator.dart';
 import '../../core/ui/states/state_view.dart';
 import '../../models/notification_post.dart';
+import '../../services/notification_badge_service.dart';
 import '../../services/notification_service.dart';
 import '../../theme/app_tokens.dart';
 
@@ -15,7 +17,8 @@ class NotificationCenterScreen extends StatefulWidget {
 
 class _NotificationCenterScreenState
     extends State<NotificationCenterScreen> {
-  final _service = NotificationService();
+  final _service = ServiceLocator.instance<NotificationService>();
+  final _badgeService = ServiceLocator.instance<NotificationBadgeService>();
   List<NotificationPost> _items = [];
   bool _loading = true;
   RealtimeChannel? _channel;
@@ -24,6 +27,7 @@ class _NotificationCenterScreenState
   void initState() {
     super.initState();
     _load();
+    _badgeService.markAllRead();
     _channel = _service.subscribeToNew((post) {
       if (mounted) {
         setState(() => _items = [post, ..._items]);

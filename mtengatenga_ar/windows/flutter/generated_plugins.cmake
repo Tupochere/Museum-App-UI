@@ -5,6 +5,7 @@
 list(APPEND FLUTTER_PLUGIN_LIST
   app_links
   connectivity_plus
+  firebase_core
   flutter_onnxruntime
   flutter_tts
   speech_to_text_windows

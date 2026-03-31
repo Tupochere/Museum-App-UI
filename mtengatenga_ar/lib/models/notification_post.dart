@@ -1,4 +1,5 @@
 import '../core/models/ui_models.dart';
+import '../services/notification_badge_service.dart';
 
 class NotificationPost {
   const NotificationPost({
@@ -61,7 +62,7 @@ class NotificationPost {
   }
 
   /// Convert to a UiEventItem for screens that still use the UI model.
-  UiEventItem toUiEventItem() {
+  UiEventItem toUiEventItem({NotificationBadgeService? badgeService}) {
     final datePart = eventDate ?? '';
     final timePart = eventTime ?? '';
     final dateLabel = (datePart.isNotEmpty && timePart.isNotEmpty)
@@ -79,7 +80,7 @@ class NotificationPost {
       location: location ?? '',
       description: summary,
       imageUrl: thumbnailUrl ?? '',
-      isUnread: true,
+      isUnread: badgeService?.isUnread(createdAt) ?? true,
     );
   }
 }

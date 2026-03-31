@@ -30,7 +30,11 @@
       "Bash(grep -E \"service\\\\.dart$\")",
       "Bash(curl:*)",
       "Bash(python3 -c \"import sys,json; e=json.load\\(sys.stdin\\)[''''embedding'''']; print\\(json.dumps\\(e[:5]\\)\\); print\\(f''''dim={len\\(e\\)}''''\\)\")",
-      "Bash(node -e \"const d=[];process.stdin.on\\(''''data'''',c=>d.push\\(c\\)\\);process.stdin.on\\(''''end'''',\\(\\)=>{const j=JSON.parse\\(Buffer.concat\\(d\\)\\);console.log\\(''''dim=''''+j.embedding.length\\);console.log\\(''''first5=''''+JSON.stringify\\(j.embedding.slice\\(0,5\\)\\)\\)}\\)\")"
+      "Bash(node -e \"const d=[];process.stdin.on\\(''''data'''',c=>d.push\\(c\\)\\);process.stdin.on\\(''''end'''',\\(\\)=>{const j=JSON.parse\\(Buffer.concat\\(d\\)\\);console.log\\(''''dim=''''+j.embedding.length\\);console.log\\(''''first5=''''+JSON.stringify\\(j.embedding.slice\\(0,5\\)\\)\\)}\\)\")",
+      "mcp__supabase__list_migrations",
+      "Bash(find . -name *migration* -o -name *sql)",
+      "mcp__supabase__get_advisors",
+      "Bash(echo \"EXIT_CODE=$?\")"
     ]
   },
   "enableAllProjectMcpServers": true,

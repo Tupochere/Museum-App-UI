@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import '../../core/models/ui_models.dart';
+import '../../core/services/service_locator.dart';
 import '../../models/notification_post.dart';
+import '../../services/notification_badge_service.dart';
 import '../../services/notification_service.dart';
 import '../../theme/app_tokens.dart';
 import 'event_details_screen.dart';
@@ -17,7 +19,8 @@ class _EventsScreenState extends State<EventsScreen> {
   int _topTab = 0; // 0 = Upcoming (events), 1 = Past (news)
   int _chip = 0;
 
-  final _service = NotificationService();
+  final _service = ServiceLocator.instance<NotificationService>();
+  final _badgeService = ServiceLocator.instance<NotificationBadgeService>();
   List<NotificationPost> _posts = [];
   bool _loading = true;
   String? _error;
@@ -35,6 +38,7 @@ class _EventsScreenState extends State<EventsScreen> {
     });
     final posts = await _service.fetchAll();
     if (mounted) {
+      _badgeService.updateCount(posts.map((p) => p.createdAt).toList());
       setState(() {
         _posts = posts;
         _loading = false;
@@ -57,11 +61,46 @@ class _EventsScreenState extends State<EventsScreen> {
       appBar: AppBar(
         title: const Text('Events & News'),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.notifications_outlined),
-            onPressed: () {
-              Navigator.of(context).push(
-                MaterialPageRoute(builder: (_) => const NotificationCenterScreen()),
+          ListenableBuilder(
+            listenable: _badgeService,
+            builder: (context, _) {
+              final count = _badgeService.unreadCount;
+              return IconButton(
+                icon: Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    const Icon(Icons.notifications_outlined),
+                    if (count > 0)
+                      Positioned(
+                        right: -6,
+                        top: -6,
+                        child: Container(
+                          padding: const EdgeInsets.all(4),
+                          decoration: const BoxDecoration(
+                            color: Colors.red,
+                            shape: BoxShape.circle,
+                          ),
+                          constraints: const BoxConstraints(minWidth: 18, minHeight: 18),
+                          child: Text(
+                            count > 99 ? '99+' : '$count',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold,
+                            ),
+                            textAlign: TextAlign.center,
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+                onPressed: () async {
+                  await Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const NotificationCenterScreen()),
+                  );
+                  // Refresh posts to update badge after returning
+                  _loadPosts();
+                },
               );
             },
           ),
@@ -92,7 +131,7 @@ class _EventsScreenState extends State<EventsScreen> {
               )
             else
               ..._filtered.map((post) {
-                final item = post.toUiEventItem();
+                final item = post.toUiEventItem(badgeService: _badgeService);
                 return Padding(
                   padding: const EdgeInsets.only(bottom: 12),
                   child: _EventCard(

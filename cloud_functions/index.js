@@ -4,6 +4,10 @@ const { VertexAI } = require('@google-cloud/vertexai');
 const { TextToSpeechClient } = require('@google-cloud/text-to-speech');
 const { TranslationServiceClient } = require('@google-cloud/translate');
 const { GoogleAuth } = require('google-auth-library');
+const admin = require('firebase-admin');
+
+// Initialize firebase-admin using ADC (same GCP project, no credentials file needed)
+admin.initializeApp();
 
 const app = express();
 app.use(express.json({ limit: '10mb' }));
@@ -349,6 +353,103 @@ app.post('/embed-artifacts', async (req, res) => {
   } catch (err) {
     console.error('POST /embed-artifacts error:', err.message || err);
     res.status(500).json({ error: err.message || 'Batch embedding failed.' });
+  }
+});
+
+// ── POST /send-push — Send FCM push to all registered devices ──────────────
+
+app.post('/send-push', async (req, res) => {
+  const { notification_id, title, body, post_type, thumbnail_url } = req.body;
+  if (!title || !body) {
+    return res.status(400).json({ error: 'Missing title or body.' });
+  }
+
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const supabaseKey = process.env.SUPABASE_SERVICE_KEY;
+  if (!supabaseUrl || !supabaseKey) {
+    return res.status(500).json({ error: 'SUPABASE_URL or SUPABASE_SERVICE_KEY not set.' });
+  }
+
+  try {
+    // 1. Fetch all device tokens
+    const tokenRes = await fetch(
+      `${supabaseUrl}/rest/v1/device_tokens?select=fcm_token`,
+      {
+        headers: {
+          'apikey': supabaseKey,
+          'Authorization': `Bearer ${supabaseKey}`,
+        },
+      }
+    );
+    const tokenRows = await tokenRes.json();
+    const tokens = tokenRows.map(r => r.fcm_token).filter(Boolean);
+
+    if (tokens.length === 0) {
+      return res.json({ sent: 0, message: 'No device tokens registered.' });
+    }
+
+    // 2. Build FCM message (batch in groups of 500 — FCM multicast limit)
+    const batches = [];
+    for (let i = 0; i < tokens.length; i += 500) {
+      batches.push(tokens.slice(i, i + 500));
+    }
+
+    let totalSuccess = 0;
+    let totalFailure = 0;
+    const staleTokens = [];
+
+    for (const batch of batches) {
+      const message = {
+        notification: { title, body },
+        data: {
+          notification_id: notification_id || '',
+          post_type: post_type || '',
+          thumbnail_url: thumbnail_url || '',
+          click_action: 'FLUTTER_NOTIFICATION_CLICK',
+        },
+        android: {
+          priority: 'high',
+          notification: {
+            channelId: 'museum_notifications',
+            defaultSound: true,
+          },
+        },
+        tokens: batch,
+      };
+
+      const response = await admin.messaging().sendEachForMulticast(message);
+      totalSuccess += response.successCount;
+      totalFailure += response.failureCount;
+
+      // 3. Collect stale tokens for cleanup
+      response.responses.forEach((resp, idx) => {
+        if (!resp.success && resp.error &&
+            (resp.error.code === 'messaging/registration-token-not-registered' ||
+             resp.error.code === 'messaging/invalid-registration-token')) {
+          staleTokens.push(batch[idx]);
+        }
+      });
+    }
+
+    // 4. Delete stale tokens from Supabase
+    for (const stale of staleTokens) {
+      await fetch(
+        `${supabaseUrl}/rest/v1/device_tokens?fcm_token=eq.${encodeURIComponent(stale)}`,
+        {
+          method: 'DELETE',
+          headers: {
+            'apikey': supabaseKey,
+            'Authorization': `Bearer ${supabaseKey}`,
+            'Prefer': 'return=minimal',
+          },
+        }
+      );
+    }
+
+    res.json({ sent: totalSuccess, failed: totalFailure, staleRemoved: staleTokens.length });
+  } catch (err) {
+    console.error('POST /send-push error:', err.message || err);
+    res.status(500).json({ error: err.message || 'Push notification failed.' });
   }
 });
 

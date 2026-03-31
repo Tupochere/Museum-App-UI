@@ -7,6 +7,9 @@ import '../domain/repositories/artifact_repository.dart';
 import '../domain/repositories/room_repository.dart';
 import 'scan_history_service.dart';
 import 'supabase_service.dart';
+import '../../services/notification_badge_service.dart';
+import '../../services/notification_service.dart';
+import '../../services/push_notification_service.dart';
 import '../../services/search_service.dart';
 import '../../services/translation_service.dart';
 
@@ -43,5 +46,20 @@ class ServiceLocator {
     _getIt.registerLazySingleton<SearchService>(
       SearchService.new,
     );
+
+    // Notification badge (load saved last-read timestamp)
+    final badgeService = NotificationBadgeService();
+    await badgeService.load();
+    _getIt.registerSingleton<NotificationBadgeService>(badgeService);
+
+    // Notification service (shared singleton across screens)
+    _getIt.registerLazySingleton<NotificationService>(
+      NotificationService.new,
+    );
+
+    // Push notification service (FCM token registration)
+    final pushService = PushNotificationService();
+    _getIt.registerSingleton<PushNotificationService>(pushService);
+    await pushService.initialize();
   }
 }
