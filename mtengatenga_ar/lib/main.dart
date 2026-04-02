@@ -4,9 +4,13 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:get_it/get_it.dart';
+import 'core/services/auth_state.dart';
 import 'core/services/service_locator.dart';
 import 'core/ui/shell/app_shell.dart';
+import 'features/auth/auth_gate.dart';
 import 'theme/app_theme.dart';
+import 'theme/app_tokens.dart';
 
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
@@ -36,10 +40,28 @@ class MtengatengaApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final authState = GetIt.instance<AuthStateNotifier>();
+
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       theme: AppTheme.light(),
-      home: const AppShell(),
+      home: ListenableBuilder(
+        listenable: authState,
+        builder: (context, _) {
+          if (authState.isLoading) {
+            return const Scaffold(
+              backgroundColor: AppColors.backgroundLight,
+              body: Center(
+                child: CircularProgressIndicator(color: AppColors.primary),
+              ),
+            );
+          }
+          if (authState.isAuthenticated) {
+            return const AppShell();
+          }
+          return const AuthGate();
+        },
+      ),
     );
   }
 }

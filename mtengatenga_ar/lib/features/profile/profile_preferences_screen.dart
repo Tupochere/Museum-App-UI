@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:get_it/get_it.dart';
+import '../../core/services/auth_service.dart';
+import '../../core/services/auth_state.dart';
 import '../../core/ui/states/state_view.dart';
 import '../../services/translation_service.dart';
 import '../../theme/app_tokens.dart';
@@ -15,6 +17,7 @@ class ProfilePreferencesScreen extends StatefulWidget {
 
 class _ProfilePreferencesScreenState extends State<ProfilePreferencesScreen> {
   final _languageState = GetIt.instance<LanguageState>();
+  final _authState = GetIt.instance<AuthStateNotifier>();
   bool _largeText = false;
   bool _highContrast = false;
   bool _eventAlerts = true;
@@ -30,6 +33,60 @@ class _ProfilePreferencesScreenState extends State<ProfilePreferencesScreen> {
         children: [
           const OfflineBanner(),
           const SizedBox(height: 12),
+          // Account section
+          ListenableBuilder(
+            listenable: _authState,
+            builder: (context, _) {
+              final profile = _authState.profile;
+              final user = _authState.user;
+              return _Section(
+                title: 'Account',
+                child: Row(
+                  children: [
+                    CircleAvatar(
+                      radius: 24,
+                      backgroundColor: AppColors.primary.withAlpha(25),
+                      child: Text(
+                        (profile?.fullName.isNotEmpty == true
+                                ? profile!.fullName[0]
+                                : user?.email?[0] ?? '?')
+                            .toUpperCase(),
+                        style: const TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.w800,
+                          color: AppColors.primary,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            profile?.fullName ?? '',
+                            style: const TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w800,
+                              color: AppColors.textMain,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            profile?.email ?? user?.email ?? '',
+                            style: const TextStyle(
+                              fontSize: 13,
+                              color: AppColors.textMuted,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
           ValueListenableBuilder<String>(
             valueListenable: _languageState,
             builder: (context, lang, _) => _Section(
@@ -124,6 +181,23 @@ class _ProfilePreferencesScreenState extends State<ProfilePreferencesScreen> {
                   },
                 ),
               ],
+            ),
+          ),
+          // Logout
+          _Section(
+            title: '',
+            child: ListTile(
+              leading: const Icon(Icons.logout, color: Colors.red),
+              title: const Text(
+                'Log Out',
+                style: TextStyle(
+                  color: Colors.red,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              onTap: () async {
+                await GetIt.instance<AuthService>().signOut();
+              },
             ),
           ),
         ],

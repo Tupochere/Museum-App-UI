@@ -5,6 +5,8 @@ import '../data/repositories/artifact_repository_brick.dart';
 import '../data/repositories/room_repository_brick.dart';
 import '../domain/repositories/artifact_repository.dart';
 import '../domain/repositories/room_repository.dart';
+import 'auth_service.dart';
+import 'auth_state.dart';
 import 'scan_history_service.dart';
 import 'supabase_service.dart';
 import '../../services/notification_badge_service.dart';
@@ -24,6 +26,12 @@ class ServiceLocator {
     final supabaseService = SupabaseService();
     await supabaseService.initialize();
     _getIt.registerSingleton<SupabaseService>(supabaseService);
+
+    // Auth service + reactive state
+    final authService = AuthService(supabaseService.client);
+    _getIt.registerSingleton<AuthService>(authService);
+    final authState = AuthStateNotifier(authService);
+    _getIt.registerSingleton<AuthStateNotifier>(authState);
 
     await BrickConfig.initialize();
 

@@ -421,12 +421,14 @@ app.post('/send-push', async (req, res) => {
       totalSuccess += response.successCount;
       totalFailure += response.failureCount;
 
-      // 3. Collect stale tokens for cleanup
+      // 3. Collect stale tokens for cleanup, log all errors
       response.responses.forEach((resp, idx) => {
-        if (!resp.success && resp.error &&
-            (resp.error.code === 'messaging/registration-token-not-registered' ||
-             resp.error.code === 'messaging/invalid-registration-token')) {
-          staleTokens.push(batch[idx]);
+        if (!resp.success && resp.error) {
+          console.error(`FCM send failed for token ${batch[idx].substring(0, 20)}...: ${resp.error.code} — ${resp.error.message}`);
+          if (resp.error.code === 'messaging/registration-token-not-registered' ||
+              resp.error.code === 'messaging/invalid-registration-token') {
+            staleTokens.push(batch[idx]);
+          }
         }
       });
     }

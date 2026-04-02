@@ -34,7 +34,16 @@
       "mcp__supabase__list_migrations",
       "Bash(find . -name *migration* -o -name *sql)",
       "mcp__supabase__get_advisors",
-      "Bash(echo \"EXIT_CODE=$?\")"
+      "Bash(echo \"EXIT_CODE=$?\")",
+      "Bash(find '/c/Museum App UI/mtengatenga_ar' -type f -name *notif* -o -name *push* -o -name *firebase*)",
+      "Bash(grep -E \"\\\\.\\(dart|kt|java\\)$\")",
+      "Bash(grep -r \"user_id\\\\|userId\\\\|user_uuid\" 'C:/Museum App UI/mtengatenga_ar/lib' --include=*.dart)",
+      "Bash(find 'C:/Museum App UI/mtengatenga_ar' -type f \\\\\\(-name *.sql -o -name *migration* -o -name *.md \\\\\\))",
+      "Bash(grep -r \"profiles\\\\|users\\\\|accounts\" 'C:/Museum App UI/mtengatenga_ar/lib' --include=*.dart)",
+      "Bash(find 'C:/Museum App UI/mtengatenga_ar' -type f \\\\\\(-name .env* -o -name *.env \\\\\\))",
+      "Bash(grep -r \"migration\\\\|table\\\\|schema\\\\|auth\\\\|user\" 'C:/Museum App UI/docs' --include=*.md)",
+      "Bash(find 'C:/Museum App UI/mtengatenga_ar/lib' -type f -name *.dart -exec grep -l \"user\\\\|profile\\\\|auth\" {})",
+      "Bash(2)"
     ]
   },
   "enableAllProjectMcpServers": true,
