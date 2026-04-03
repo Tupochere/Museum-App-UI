@@ -6,6 +6,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../domain/entities/profile.dart';
 import 'auth_service.dart';
+import 'saved_artifacts_service.dart';
 import '../../services/push_notification_service.dart';
 
 /// Reactive auth state that the UI listens to via ListenableBuilder.
@@ -45,11 +46,13 @@ class AuthStateNotifier extends ChangeNotifier {
         _user = state.session?.user;
         _fetchProfile();
         _linkDeviceToken();
+        _loadSavedArtifacts();
         notifyListeners();
         break;
       case AuthChangeEvent.signedOut:
         _user = null;
         _profile = null;
+        _clearSavedArtifacts();
         notifyListeners();
         break;
       default:
@@ -67,6 +70,22 @@ class AuthStateNotifier extends ChangeNotifier {
       GetIt.instance<PushNotificationService>().linkCurrentUser();
     } catch (e) {
       debugPrint('Failed to link device token: $e');
+    }
+  }
+
+  void _loadSavedArtifacts() {
+    try {
+      GetIt.instance<SavedArtifactsService>().load();
+    } catch (e) {
+      debugPrint('Failed to load saved artifacts: $e');
+    }
+  }
+
+  void _clearSavedArtifacts() {
+    try {
+      GetIt.instance<SavedArtifactsService>().value = {};
+    } catch (e) {
+      debugPrint('Failed to clear saved artifacts: $e');
     }
   }
 

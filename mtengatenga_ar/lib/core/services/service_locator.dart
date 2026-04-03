@@ -7,6 +7,7 @@ import '../domain/repositories/artifact_repository.dart';
 import '../domain/repositories/room_repository.dart';
 import 'auth_service.dart';
 import 'auth_state.dart';
+import 'saved_artifacts_service.dart';
 import 'scan_history_service.dart';
 import 'supabase_service.dart';
 import '../../services/notification_badge_service.dart';
@@ -44,6 +45,10 @@ class ServiceLocator {
     _getIt.registerLazySingleton<ScanHistoryService>(
       ScanHistoryService.new,
     );
+
+    final savedArtifactsService = SavedArtifactsService();
+    await savedArtifactsService.load();
+    _getIt.registerSingleton<SavedArtifactsService>(savedArtifactsService);
 
     final languageState = LanguageState();
     await languageState.load();

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:get_it/get_it.dart';
 import '../../core/domain/entities/artifact.model.dart';
+import '../../core/services/saved_artifacts_service.dart';
 import '../../core/services/ticket_gate.dart';
 import '../../features/ai_guide/ai_guide_screen.dart';
 import '../../services/translation_service.dart';
@@ -20,6 +21,7 @@ class ArtifactDetailsScreen extends StatefulWidget {
 
 class _ArtifactDetailsScreenState extends State<ArtifactDetailsScreen> {
   int _tabIndex = 0;
+  final _savedService = GetIt.instance<SavedArtifactsService>();
 
   // From Stitch camera-view background-image :contentReference[oaicite:1]{index=1}
   static const _cameraBgUrl =
@@ -190,7 +192,20 @@ class _ArtifactDetailsScreenState extends State<ArtifactDetailsScreen> {
                             ),
                           ),
                           const SizedBox(width: 12),
-                          _SquareIconButton(icon: Icons.favorite, onTap: () {}),
+                          ValueListenableBuilder<Set<String>>(
+                            valueListenable: _savedService,
+                            builder: (context, savedIds, _) {
+                              final id = widget.artifact?.id;
+                              final isSaved = id != null && savedIds.contains(id);
+                              return _SquareIconButton(
+                                icon: isSaved ? Icons.favorite : Icons.favorite_border,
+                                active: isSaved,
+                                onTap: () {
+                                  if (id != null) _savedService.toggle(id);
+                                },
+                              );
+                            },
+                          ),
                           const SizedBox(width: 12),
                           _SquareIconButton(icon: Icons.share, onTap: () {}),
                         ],
@@ -404,9 +419,14 @@ class _Thumb3D extends StatelessWidget {
 }
 
 class _SquareIconButton extends StatelessWidget {
-  const _SquareIconButton({required this.icon, required this.onTap});
+  const _SquareIconButton({
+    required this.icon,
+    required this.onTap,
+    this.active = false,
+  });
   final IconData icon;
   final VoidCallback onTap;
+  final bool active;
 
   @override
   Widget build(BuildContext context) {
@@ -417,11 +437,18 @@ class _SquareIconButton extends StatelessWidget {
         width: 48,
         height: 48,
         decoration: BoxDecoration(
-          color: const Color(0xFFF5F5F4), // stone-100 :contentReference[oaicite:15]{index=15}
+          color: active
+              ? const Color(0xFFE07A5F).withAlpha(25)
+              : const Color(0xFFF5F5F4),
           borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: const Color(0xFFE7E5E4)), // stone-200
+          border: Border.all(
+            color: active ? const Color(0xFFE07A5F) : const Color(0xFFE7E5E4),
+          ),
         ),
-        child: Icon(icon, color: const Color(0xFF57534E)), // stone-600
+        child: Icon(
+          icon,
+          color: active ? const Color(0xFFE07A5F) : const Color(0xFF57534E),
+        ),
       ),
     );
   }
