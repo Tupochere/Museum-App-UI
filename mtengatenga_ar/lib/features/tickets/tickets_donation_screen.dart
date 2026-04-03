@@ -10,19 +10,20 @@ class TicketsDonationScreen extends StatefulWidget {
 }
 
 class _TicketsDonationScreenState extends State<TicketsDonationScreen> {
-  int adult = 1;
+  int adult = 0;
   int student = 0;
   int international = 0;
 
-  int donationPreset = 0; // 0=$5, 1=$10, 2=$20
+  int? donationPreset; // null = no donation, 0=$5, 1=$10, 2=$20
   bool monthly = false;
 
   final TextEditingController _customDonation = TextEditingController();
 
-  // hero image url from Stitch :contentReference[oaicite:1]{index=1}
+  // hero image url
   static const heroUrl =
       'https://lh3.googleusercontent.com/aida-public/AB6AXuAW9Z4KzoiTwNkAkRI8heKUJuYHXAOKOXdWVDQ-QNvdSuElrMho60_9VQKEBHsr8pRyD3DqZIkBfmSxj9MMc_IADwV13yOibBIPY2kR84Op5WquHsQkZY_7b1CCSTz-oqNkyoRYiYnshlKf23REsWsyfE-0bmix1LESKRO5LzUKU_xbCBQ1pl5kHuVVUiLzSHAfGBHQ1DaV5RwURUYyu7aMxqfIjdM8LB1TE1d-Me4YmRlys2D9CyuwRrAX_9DElp0at_iPH3XkOPO9';
 
+  int get _totalTickets => adult + student + international;
   int get ticketTotalMWK => adult * 2000 + student * 1000; // UI-only (excludes international & donation)
 
   int _donationAmountUsd() {
@@ -31,13 +32,16 @@ class _TicketsDonationScreenState extends State<TicketsDonationScreen> {
       final parsed = int.tryParse(custom);
       if (parsed != null && parsed > 0) return parsed;
     }
+    if (donationPreset == null) return 0;
     return donationPreset == 0 ? 5 : donationPreset == 1 ? 10 : 20;
   }
 
+  bool get _hasDonation => _donationAmountUsd() > 0;
+
   String get donationLabel {
-    final custom = _customDonation.text.trim();
-    if (custom.isNotEmpty) return '\$${custom} donation';
-    return donationPreset == 0 ? '+ \$5.00 donation' : donationPreset == 1 ? '+ \$10.00 donation' : '+ \$20.00 donation';
+    final amount = _donationAmountUsd();
+    if (amount <= 0) return '';
+    return '+ \$$amount.00 donation';
   }
 
   @override
@@ -229,7 +233,7 @@ class _TicketsDonationScreenState extends State<TicketsDonationScreen> {
                             text: r'$5',
                             active: donationPreset == 0 && _customDonation.text.trim().isEmpty,
                             onTap: () => setState(() {
-                              donationPreset = 0;
+                              donationPreset = donationPreset == 0 ? null : 0;
                               _customDonation.clear();
                             }),
                           ),
@@ -240,7 +244,7 @@ class _TicketsDonationScreenState extends State<TicketsDonationScreen> {
                             text: r'$10',
                             active: donationPreset == 1 && _customDonation.text.trim().isEmpty,
                             onTap: () => setState(() {
-                              donationPreset = 1;
+                              donationPreset = donationPreset == 1 ? null : 1;
                               _customDonation.clear();
                             }),
                           ),
@@ -251,7 +255,7 @@ class _TicketsDonationScreenState extends State<TicketsDonationScreen> {
                             text: r'$20',
                             active: donationPreset == 2 && _customDonation.text.trim().isEmpty,
                             onTap: () => setState(() {
-                              donationPreset = 2;
+                              donationPreset = donationPreset == 2 ? null : 2;
                               _customDonation.clear();
                             }),
                           ),
@@ -377,15 +381,17 @@ class _TicketsDonationScreenState extends State<TicketsDonationScreen> {
                               height: 1.0,
                             ),
                           ),
-                          const SizedBox(height: 4),
-                          Text(
-                            donationLabel,
-                            style: const TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.w900,
-                              color: primary,
+                          if (_hasDonation) ...[
+                            const SizedBox(height: 4),
+                            Text(
+                              donationLabel,
+                              style: const TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w900,
+                                color: primary,
+                              ),
                             ),
-                          ),
+                          ],
                         ],
                       ),
                     ),
@@ -394,26 +400,30 @@ class _TicketsDonationScreenState extends State<TicketsDonationScreen> {
                       child: SizedBox(
                         height: 54,
                         child: ElevatedButton(
-                          onPressed: () {
-                            final draft = UiTicketOrderDraft(
-                              adult: adult,
-                              student: student,
-                              international: international,
-                              donationLabel: donationLabel,
-                              totalLabel: 'MWK ${ticketTotalMWK.toString()}',
-                              donationAmountUsd: _donationAmountUsd(),
-                              totalAmountMwk: ticketTotalMWK,
-                              isMonthlyDonation: monthly,
-                            );
-                            Navigator.of(context).push(
-                              MaterialPageRoute(
-                                builder: (_) => TicketCheckoutScreen(draft: draft),
-                              ),
-                            );
-                          },
+                          onPressed: _totalTickets == 0
+                              ? null
+                              : () {
+                                  final draft = UiTicketOrderDraft(
+                                    adult: adult,
+                                    student: student,
+                                    international: international,
+                                    donationLabel: donationLabel,
+                                    totalLabel: 'MWK ${ticketTotalMWK.toString()}',
+                                    donationAmountUsd: _donationAmountUsd(),
+                                    totalAmountMwk: ticketTotalMWK,
+                                    isMonthlyDonation: monthly,
+                                  );
+                                  Navigator.of(context).push(
+                                    MaterialPageRoute(
+                                      builder: (_) => TicketCheckoutScreen(draft: draft),
+                                    ),
+                                  );
+                                },
                           style: ElevatedButton.styleFrom(
                             backgroundColor: primary,
                             foregroundColor: Colors.white,
+                            disabledBackgroundColor: primary.withAlpha(100),
+                            disabledForegroundColor: Colors.white60,
                             elevation: 0,
                             shape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(18),

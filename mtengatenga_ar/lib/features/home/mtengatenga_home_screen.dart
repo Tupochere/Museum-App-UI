@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:get_it/get_it.dart';
+import '../../core/services/ticket_gate.dart';
 import '../../services/translation_service.dart';
 import '../../theme/app_tokens.dart';
 import '../ai_guide/ai_guide_screen.dart';
@@ -78,11 +79,10 @@ class _MtengatengaHomeScreenState extends State<MtengatengaHomeScreen> {
               ),
               const SizedBox(height: 22),
               _ScanCard(
-                onTap: () {
-                  Navigator.of(context).push(
-                    MaterialPageRoute(builder: (_) => const ScanScreen()),
-                  );
-                },
+                onTap: () => TicketGate.navigate(
+                  context,
+                  () => const ScanScreen(),
+                ),
               ),
               const SizedBox(height: 22),
               GridView.count(
@@ -107,11 +107,10 @@ class _MtengatengaHomeScreenState extends State<MtengatengaHomeScreen> {
                     icon: Icons.smart_toy_outlined,
                     title: 'AI Guide',
                     subtitle: 'Ask questions',
-                    onTap: () {
-                      Navigator.of(context).push(
-                        MaterialPageRoute(builder: (_) => const AiGuideScreen()),
-                      );
-                    },
+                    onTap: () => TicketGate.navigate(
+                      context,
+                      () => const AiGuideScreen(),
+                    ),
                   ),
                   _ActionTile(
                     icon: Icons.confirmation_number_outlined,

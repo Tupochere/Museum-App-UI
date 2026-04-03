@@ -4,6 +4,7 @@ import 'package:intl/intl.dart';
 import '../../core/domain/repositories/artifact_repository.dart';
 import '../../core/services/scan_history_service.dart';
 import '../../core/services/service_locator.dart';
+import '../../core/services/ticket_gate.dart';
 import '../../theme/app_tokens.dart';
 import '../artifact/artifact_details_screen.dart';
 import 'scan_screen.dart';
@@ -384,11 +385,10 @@ class _EmptyState extends StatelessWidget {
             ),
             const SizedBox(height: 24),
             ElevatedButton.icon(
-              onPressed: () {
-                Navigator.of(context).push(
-                  MaterialPageRoute(builder: (_) => const ScanScreen()),
-                );
-              },
+              onPressed: () => TicketGate.navigate(
+                context,
+                () => const ScanScreen(),
+              ),
               style: ElevatedButton.styleFrom(
                 backgroundColor: AppColors.primary,
                 foregroundColor: Colors.white,

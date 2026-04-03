@@ -9,6 +9,7 @@ import '../../core/domain/repositories/artifact_repository.dart';
 import '../../core/models/ui_models.dart';
 import '../../core/services/scan_history_service.dart';
 import '../../core/services/service_locator.dart';
+import '../../core/services/ticket_gate.dart';
 import '../../core/ui/states/state_view.dart';
 import '../../screens/artifact_viewer_screen.dart';
 import '../../services/search_service.dart';
@@ -431,13 +432,10 @@ class _ScanScreenState extends State<ScanScreen>
                           child: _VisionNoMatchCard(
                             description: _visionDescription!,
                             onRetry: _resetVision,
-                            onAskGuide: () {
-                              Navigator.of(context).push(
-                                MaterialPageRoute(
-                                  builder: (_) => const AiGuideScreen(),
-                                ),
-                              );
-                            },
+                            onAskGuide: () => TicketGate.navigate(
+                              context,
+                              () => const AiGuideScreen(),
+                            ),
                           ),
                         ),
 

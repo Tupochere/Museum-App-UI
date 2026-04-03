@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:get_it/get_it.dart';
 import '../../core/domain/entities/artifact.model.dart';
+import '../../core/services/ticket_gate.dart';
 import '../../features/ai_guide/ai_guide_screen.dart';
 import '../../services/translation_service.dart';
 import '../../theme/app_tokens.dart';
@@ -38,11 +39,9 @@ class _ArtifactDetailsScreenState extends State<ArtifactDetailsScreen> {
     return Scaffold(
       backgroundColor: Colors.black,
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => Navigator.push(
+        onPressed: () => TicketGate.navigate(
           context,
-          MaterialPageRoute(
-            builder: (_) => AiGuideScreen(artifact: widget.artifact),
-          ),
+          () => AiGuideScreen(artifact: widget.artifact),
         ),
         backgroundColor: AppColors.primary,
         foregroundColor: Colors.white,

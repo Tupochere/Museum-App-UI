@@ -68,7 +68,9 @@ class PaymentService {
     required int ticketAmountMwk,
     required int totalAmountMwk,
     required bool isMonthlyDonation,
+    required String visitDate,
   }) async {
+    final userId = _client.auth.currentUser?.id;
     await _client.from('ticket_orders').insert({
       'tx_ref': txRef,
       'visitor_name': visitorName,
@@ -82,6 +84,8 @@ class PaymentService {
       'currency': 'MWK',
       'payment_status': 'pending',
       'is_monthly_donation': isMonthlyDonation,
+      'visit_date': visitDate,
+      if (userId != null) 'user_id': userId,
     });
 
     // If there's a donation, also insert into donations table
@@ -202,7 +206,8 @@ class PaymentService {
         'tx_ref': txRef,
         'visitor': orderRow['visitor_name'],
         'tickets': ticketParts.join(', '),
-        'date': DateTime.now().toIso8601String().split('T').first,
+        'date': orderRow['visit_date'] ??
+            DateTime.now().toIso8601String().split('T').first,
         'valid': true,
       });
 
@@ -237,13 +242,33 @@ class PaymentService {
     }).eq('tx_ref', txRef);
   }
 
-  /// Fetches successful orders for the wallet screen.
+  /// Fetches successful orders for the wallet screen (current user only).
   Future<List<Map<String, dynamic>>> getCompletedOrders() async {
-    final rows = await _client
+    final userId = _client.auth.currentUser?.id;
+    var query = _client
         .from('ticket_orders')
         .select()
-        .eq('payment_status', 'success')
-        .order('created_at', ascending: false);
+        .eq('payment_status', 'success');
+    if (userId != null) {
+      query = query.eq('user_id', userId);
+    }
+    final rows = await query.order('created_at', ascending: false);
     return List<Map<String, dynamic>>.from(rows);
+  }
+
+  /// Checks whether the current user has a valid ticket for today.
+  Future<bool> hasValidTicketForToday() async {
+    final userId = _client.auth.currentUser?.id;
+    if (userId == null) return false;
+
+    final today = DateTime.now().toIso8601String().split('T').first;
+    final rows = await _client
+        .from('ticket_orders')
+        .select('id')
+        .eq('user_id', userId)
+        .eq('payment_status', 'success')
+        .eq('visit_date', today)
+        .limit(1);
+    return (rows as List).isNotEmpty;
   }
 }
