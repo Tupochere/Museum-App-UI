@@ -2,43 +2,32 @@ import 'package:flutter/material.dart';
 import 'package:get_it/get_it.dart';
 import '../../core/services/auth_service.dart';
 import '../../core/services/auth_state.dart';
-import '../../core/ui/states/state_view.dart';
 import '../../services/translation_service.dart';
 import '../../theme/app_tokens.dart';
 import '../events/notification_center_screen.dart';
+import '../scan/scan_history_screen.dart';
 import '../tickets/ticket_wallet_screen.dart';
 
-class ProfilePreferencesScreen extends StatefulWidget {
+class ProfilePreferencesScreen extends StatelessWidget {
   const ProfilePreferencesScreen({super.key});
 
   @override
-  State<ProfilePreferencesScreen> createState() => _ProfilePreferencesScreenState();
-}
-
-class _ProfilePreferencesScreenState extends State<ProfilePreferencesScreen> {
-  final _languageState = GetIt.instance<LanguageState>();
-  final _authState = GetIt.instance<AuthStateNotifier>();
-  bool _largeText = false;
-  bool _highContrast = false;
-  bool _eventAlerts = true;
-  bool _tourReminders = true;
-
-  @override
   Widget build(BuildContext context) {
+    final languageState = GetIt.instance<LanguageState>();
+    final authState = GetIt.instance<AuthStateNotifier>();
+
     return Scaffold(
       backgroundColor: AppColors.backgroundLight,
       appBar: AppBar(title: const Text('Profile & Preferences')),
       body: ListView(
         padding: const EdgeInsets.all(AppSpacing.md),
         children: [
-          const OfflineBanner(),
-          const SizedBox(height: 12),
-          // Account section
+          // Account
           ListenableBuilder(
-            listenable: _authState,
+            listenable: authState,
             builder: (context, _) {
-              final profile = _authState.profile;
-              final user = _authState.user;
+              final profile = authState.profile;
+              final user = authState.user;
               return _Section(
                 title: 'Account',
                 child: Row(
@@ -87,8 +76,10 @@ class _ProfilePreferencesScreenState extends State<ProfilePreferencesScreen> {
               );
             },
           ),
+
+          // Language
           ValueListenableBuilder<String>(
-            valueListenable: _languageState,
+            valueListenable: languageState,
             builder: (context, lang, _) => _Section(
               title: 'Language',
               child: SegmentedButton<String>(
@@ -98,7 +89,8 @@ class _ProfilePreferencesScreenState extends State<ProfilePreferencesScreen> {
                     label: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Text('\u{1F1EC}\u{1F1E7}', style: TextStyle(fontSize: 18)),
+                        Text('\u{1F1EC}\u{1F1E7}',
+                            style: TextStyle(fontSize: 18)),
                         SizedBox(width: 6),
                         Text('English'),
                       ],
@@ -109,7 +101,8 @@ class _ProfilePreferencesScreenState extends State<ProfilePreferencesScreen> {
                     label: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Text('\u{1F1F2}\u{1F1FC}', style: TextStyle(fontSize: 18)),
+                        Text('\u{1F1F2}\u{1F1FC}',
+                            style: TextStyle(fontSize: 18)),
                         SizedBox(width: 6),
                         Text('Chichewa'),
                       ],
@@ -118,44 +111,12 @@ class _ProfilePreferencesScreenState extends State<ProfilePreferencesScreen> {
                 ],
                 selected: {lang},
                 onSelectionChanged: (value) =>
-                    _languageState.setLanguage(value.first),
+                    languageState.setLanguage(value.first),
               ),
             ),
           ),
-          _Section(
-            title: 'Accessibility',
-            child: Column(
-              children: [
-                SwitchListTile(
-                  value: _largeText,
-                  onChanged: (v) => setState(() => _largeText = v),
-                  title: const Text('Large Text'),
-                ),
-                SwitchListTile(
-                  value: _highContrast,
-                  onChanged: (v) => setState(() => _highContrast = v),
-                  title: const Text('High Contrast'),
-                ),
-              ],
-            ),
-          ),
-          _Section(
-            title: 'Notifications',
-            child: Column(
-              children: [
-                SwitchListTile(
-                  value: _eventAlerts,
-                  onChanged: (v) => setState(() => _eventAlerts = v),
-                  title: const Text('Event Alerts'),
-                ),
-                SwitchListTile(
-                  value: _tourReminders,
-                  onChanged: (v) => setState(() => _tourReminders = v),
-                  title: const Text('Tour Reminders'),
-                ),
-              ],
-            ),
-          ),
+
+          // Quick Access
           _Section(
             title: 'Quick Access',
             child: Column(
@@ -166,7 +127,19 @@ class _ProfilePreferencesScreenState extends State<ProfilePreferencesScreen> {
                   trailing: const Icon(Icons.chevron_right),
                   onTap: () {
                     Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => const TicketWalletScreen()),
+                      MaterialPageRoute(
+                          builder: (_) => const TicketWalletScreen()),
+                    );
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.history_outlined),
+                  title: const Text('Scan History'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () {
+                    Navigator.of(context).push(
+                      MaterialPageRoute(
+                          builder: (_) => const ScanHistoryScreen()),
                     );
                   },
                 ),
@@ -176,14 +149,16 @@ class _ProfilePreferencesScreenState extends State<ProfilePreferencesScreen> {
                   trailing: const Icon(Icons.chevron_right),
                   onTap: () {
                     Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => const NotificationCenterScreen()),
+                      MaterialPageRoute(
+                          builder: (_) => const NotificationCenterScreen()),
                     );
                   },
                 ),
               ],
             ),
           ),
-          // Logout
+
+          // Log Out
           _Section(
             title: '',
             child: ListTile(
@@ -198,6 +173,20 @@ class _ProfilePreferencesScreenState extends State<ProfilePreferencesScreen> {
               onTap: () async {
                 await GetIt.instance<AuthService>().signOut();
               },
+            ),
+          ),
+
+          // App version
+          const Padding(
+            padding: EdgeInsets.only(top: 8, bottom: 24),
+            child: Text(
+              'Mtengatenga AR Museum v1.0.0',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                color: AppColors.textMuted,
+              ),
             ),
           ),
         ],
@@ -225,15 +214,17 @@ class _Section extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            title,
-            style: const TextStyle(
-              fontSize: 14,
-              fontWeight: FontWeight.w900,
-              color: AppColors.textMain,
+          if (title.isNotEmpty) ...[
+            Text(
+              title,
+              style: const TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w900,
+                color: AppColors.textMain,
+              ),
             ),
-          ),
-          const SizedBox(height: 8),
+            const SizedBox(height: 8),
+          ],
           child,
         ],
       ),
