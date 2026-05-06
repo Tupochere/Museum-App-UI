@@ -4,16 +4,77 @@ import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:get_it/get_it.dart';
 import 'package:google_generative_ai/google_generative_ai.dart';
+
 import '../core/domain/entities/artifact.model.dart';
+import 'translation_service.dart';
+
+enum AiGuideMode { text, voice, tour }
+
+extension on AiGuideMode {
+  String get wireValue => switch (this) {
+    AiGuideMode.text => 'text',
+    AiGuideMode.voice => 'voice',
+    AiGuideMode.tour => 'tour',
+  };
+
+  int get historyLimit => switch (this) {
+    AiGuideMode.text => 10,
+    AiGuideMode.voice => 6,
+    AiGuideMode.tour => 0,
+  };
+}
+
+class AiGuideMessage {
+  final String role;
+  final String content;
+
+  const AiGuideMessage({required this.role, required this.content});
+
+  Map<String, String> toJson() => {'role': role, 'content': content};
+}
+
+class AiGuideRequest {
+  final String query;
+  final AiGuideMode mode;
+  final String? artifactId;
+  final List<AiGuideMessage> history;
+  final String language;
+
+  const AiGuideRequest({
+    required this.query,
+    required this.mode,
+    required this.history,
+    required this.language,
+    this.artifactId,
+  });
+
+  Map<String, dynamic> toJson() => {
+    'query': query,
+    'mode': mode.wireValue,
+    'artifactId': artifactId,
+    'history': history.map((message) => message.toJson()).toList(),
+    'language': language,
+  };
+}
 
 class GeminiService {
   static const String _defaultModel = 'gemini-2.5-flash';
   static const int _maxRetries = 3;
 
-  GeminiService();
+  GeminiService({LanguageState? languageState})
+    : _languageState = languageState ?? _resolveLanguageState();
 
-  // ── Cloud Function proxy ────────────────────────────────────────────────
+  final LanguageState _languageState;
+
+  static LanguageState _resolveLanguageState() {
+    final getIt = GetIt.instance;
+    if (getIt.isRegistered<LanguageState>()) {
+      return getIt<LanguageState>();
+    }
+    return LanguageState();
+  }
 
   String get _cloudFunctionUrl =>
       dotenv.env['CLOUD_FUNCTION_URL']?.trim() ?? '';
@@ -32,11 +93,8 @@ class GeminiService {
       return _defaultModel;
     }
 
-    // Accept either "gemini-2.5-flash" or "models/gemini-2.5-flash".
     return configuredModel.replaceFirst(RegExp(r'^models/'), '');
   }
-
-  // ── Quota retry helpers ──────────────────────────────────────────────────
 
   static bool _isQuotaError(Object error) {
     final message = error.toString().toLowerCase();
@@ -47,151 +105,110 @@ class GeminiService {
   }
 
   static Duration _retryDelay(Object error, int attempt) {
-    // Try to parse "retry in Xs" from the error message.
-    final match =
-        RegExp(r'retry\s+in\s+([\d.]+)s', caseSensitive: false)
-            .firstMatch(error.toString());
+    final match = RegExp(
+      r'retry\s+in\s+([\d.]+)s',
+      caseSensitive: false,
+    ).firstMatch(error.toString());
     if (match != null) {
       final seconds = double.tryParse(match.group(1)!);
       if (seconds != null && seconds > 0 && seconds < 120) {
-        // Add a small jitter to avoid thundering herd.
         final jitterMs = Random().nextInt(500);
-        return Duration(
-          milliseconds: (seconds * 1000).ceil() + jitterMs,
-        );
+        return Duration(milliseconds: (seconds * 1000).ceil() + jitterMs);
       }
     }
-    // Exponential backoff: 3s, 6s, 12s …
+
     final baseMs = 3000 * pow(2, attempt).toInt();
     final jitterMs = Random().nextInt(1000);
     return Duration(milliseconds: baseMs + jitterMs);
   }
 
-  // ── Prompt ───────────────────────────────────────────────────────────────
-
-  String _buildPrompt(
-    Artifact artifact,
-    String userMessage,
-    List<Map<String, String>> history, {
-    bool voiceMode = false,
-  }) {
-    final contextBlock = StringBuffer();
-    contextBlock.writeln(
-      'You are a knowledgeable, warm and engaging museum guide at Mtengatenga Cultural Museum in Malawi.'
-      ' You specialize in Malawian cultural heritage, Chewa traditions, and the artifacts in this museum.'
-      ' Keep responses conversational and under ${voiceMode ? 3 : 4} sentences unless asked for detail.'
-      ' Only answer questions about the artifact below or directly related Malawian cultural heritage.'
-      ' If asked about something unrelated, politely redirect to the artifact.'
-      ' Use respectful language when discussing cultural and spiritual practices.',
-    );
-    if (voiceMode) {
-      contextBlock.writeln(
-        ' This response will be spoken aloud by an English text-to-speech engine, so keep it natural, concise, and easy to follow.'
-        ' Avoid lists unless the visitor explicitly asks for them.'
-        ' Lead with the most useful point quickly.'
-        ' When using Chichewa, Chewa, or other Malawian words, write them phonetically so an English TTS can pronounce them naturally.'
-        ' For example: "Gule Wamkulu" → "Goo-leh Wam-koo-loo", "Mtengatenga" → "Mm-ten-ga-ten-ga", "Nyau" → "Nyow".'
-        ' Place the phonetic version in the text directly — do not include the original spelling alongside it.',
-      );
-    }
-    contextBlock.writeln();
-    if (artifact.id != 'general') {
-      contextBlock.writeln('ARTIFACT CONTEXT:');
-      contextBlock.writeln('Name: ${artifact.name}');
-      if (artifact.category != null) {
-        contextBlock.writeln('Category: ${artifact.category}');
-      }
-      if (artifact.period != null) {
-        contextBlock.writeln('Period: ${artifact.period}');
-      }
-      contextBlock.writeln('Description: ${artifact.description}');
-      if (artifact.aiContext?.isNotEmpty == true) {
-        contextBlock.writeln('Cultural Context: ${artifact.aiContext}');
-      }
-      contextBlock.writeln();
-    }
-
-    if (history.isNotEmpty) {
-      contextBlock.writeln('CONVERSATION SO FAR:');
-      for (final msg in history) {
-        final role = msg['role'] == 'user' ? 'Visitor' : 'Guide';
-        contextBlock.writeln('$role: ${msg['content']}');
-      }
-      contextBlock.writeln();
-    }
-
-    contextBlock.writeln('Visitor: $userMessage');
-    contextBlock.writeln('Guide:');
-    return contextBlock.toString();
+  @visibleForTesting
+  static List<AiGuideMessage> sanitizeHistory(
+    List<Map<String, String>> history,
+  ) {
+    return history
+        .map((entry) {
+          final role = entry['role'];
+          final content = entry['content']?.trim() ?? '';
+          if ((role != 'user' && role != 'model') || content.isEmpty) {
+            return null;
+          }
+          return AiGuideMessage(role: role!, content: content);
+        })
+        .whereType<AiGuideMessage>()
+        .toList(growable: false);
   }
 
-  // ── Chat (text mode) ────────────────────────────────────────────────────
+  @visibleForTesting
+  static List<AiGuideMessage> trimHistoryForMode(
+    AiGuideMode mode,
+    List<AiGuideMessage> history,
+  ) {
+    final limit = mode.historyLimit;
+    if (limit <= 0) return const [];
+    if (history.length <= limit) return history;
+    return history.sublist(history.length - limit);
+  }
+
+  @visibleForTesting
+  AiGuideRequest buildRequest({
+    required Artifact artifact,
+    required String userMessage,
+    List<Map<String, String>> history = const [],
+    AiGuideMode mode = AiGuideMode.text,
+  }) {
+    final query = userMessage.trim();
+    final artifactId = artifact.id == museumGuideArtifact.id
+        ? null
+        : artifact.id;
+    final sanitizedHistory = sanitizeHistory(history);
+    final trimmedHistory = trimHistoryForMode(mode, sanitizedHistory);
+
+    return AiGuideRequest(
+      query: query,
+      mode: mode,
+      artifactId: artifactId,
+      history: trimmedHistory,
+      language: _languageState.value == 'ny' ? 'ny' : 'en',
+    );
+  }
 
   Future<String> chatAboutArtifact(
     Artifact artifact,
     String userMessage,
     List<Map<String, String>> history,
   ) async {
-    final prompt = _buildPrompt(artifact, userMessage, history);
-
-    if (_useCloudFunction) {
-      return _chatViaCloudFunction(prompt, artifact);
-    }
-
-    for (var attempt = 0; attempt <= _maxRetries; attempt++) {
-      try {
-        final model = _buildModel();
-        final response =
-            await model.generateContent([Content.text(prompt)]);
-        final text = response.text;
-        if (text == null || text.trim().isEmpty) {
-          debugPrint('GeminiService: empty response');
-          return _fallback(artifact);
-        }
-        return text.trim();
-      } catch (e, st) {
-        if (attempt < _maxRetries && _isQuotaError(e)) {
-          final delay = _retryDelay(e, attempt);
-          debugPrint(
-            'GeminiService.chatAboutArtifact: quota exceeded, '
-            'retrying in ${delay.inSeconds}s '
-            '(attempt ${attempt + 1}/$_maxRetries)',
-          );
-          await Future.delayed(delay);
-          continue;
-        }
-        debugPrint(
-          'GeminiService.chatAboutArtifact ERROR '
-          '(model: ${_resolveModelName()}): $e',
-        );
-        debugPrintStack(stackTrace: st);
-        return _fallback(artifact);
-      }
-    }
-    return _fallback(artifact);
+    final request = buildRequest(
+      artifact: artifact,
+      userMessage: userMessage,
+      history: history,
+      mode: AiGuideMode.text,
+    );
+    return _queryGuide(request, artifact);
   }
-
-  // ── Tour narration ──────────────────────────────────────────────────────
 
   Future<String> generateTourNarration(
     Artifact artifact,
     String narrationContext,
   ) async {
-    return chatAboutArtifact(
-      artifact,
-      'Provide a brief spoken narration for a visitor standing in front of this artifact. Context: $narrationContext',
-      const [],
+    final request = buildRequest(
+      artifact: artifact,
+      userMessage:
+          'Provide a brief spoken narration for a visitor standing in front of this artifact. Context: $narrationContext',
+      mode: AiGuideMode.tour,
     );
+    return _queryGuide(request, artifact);
   }
-
-  // ── Voice query (single shot) ───────────────────────────────────────────
 
   Future<String> voiceQuery(Artifact? artifact, String userMessage) async {
     final target = artifact ?? museumGuideArtifact;
-    return chatAboutArtifact(target, userMessage, const []);
+    final request = buildRequest(
+      artifact: target,
+      userMessage: userMessage,
+      mode: AiGuideMode.voice,
+    );
+    return _queryGuide(request, target);
   }
-
-  // ── Voice query (streaming with retry) ──────────────────────────────────
 
   Stream<String> voiceQueryStream(
     Artifact? artifact,
@@ -199,18 +216,19 @@ class GeminiService {
     List<Map<String, String>> history = const [],
   }) async* {
     final target = artifact ?? museumGuideArtifact;
-    final prompt = _buildPrompt(
-      target,
-      userMessage,
-      history,
-      voiceMode: true,
+    final request = buildRequest(
+      artifact: target,
+      userMessage: userMessage,
+      history: history,
+      mode: AiGuideMode.voice,
     );
 
     if (_useCloudFunction) {
-      yield* _streamViaCloudFunction(prompt);
+      yield* _streamViaCloudFunction(request);
       return;
     }
 
+    final prompt = _buildFallbackPrompt(target, request);
     for (var attempt = 0; attempt <= _maxRetries; attempt++) {
       var hasYielded = false;
       try {
@@ -223,10 +241,8 @@ class GeminiService {
           hasYielded = true;
           yield text;
         }
-        return; // Stream completed successfully.
+        return;
       } catch (e, st) {
-        // Only retry if we haven't yielded any data yet (the consumer
-        // hasn't received partial text) and the error is quota-related.
         if (!hasYielded && attempt < _maxRetries && _isQuotaError(e)) {
           final delay = _retryDelay(e, attempt);
           debugPrint(
@@ -247,31 +263,166 @@ class GeminiService {
     }
   }
 
-  // ── Fallback ────────────────────────────────────────────────────────────
+  Future<String> _queryGuide(
+    AiGuideRequest request,
+    Artifact fallbackArtifact,
+  ) async {
+    if (_useCloudFunction) {
+      return _chatViaCloudFunction(request, fallbackArtifact);
+    }
+
+    final prompt = _buildFallbackPrompt(fallbackArtifact, request);
+    for (var attempt = 0; attempt <= _maxRetries; attempt++) {
+      try {
+        final model = _buildModel();
+        final response = await model.generateContent([Content.text(prompt)]);
+        final text = response.text;
+        if (text == null || text.trim().isEmpty) {
+          debugPrint('GeminiService: empty response');
+          return _fallback(fallbackArtifact);
+        }
+        return text.trim();
+      } catch (e, st) {
+        if (attempt < _maxRetries && _isQuotaError(e)) {
+          final delay = _retryDelay(e, attempt);
+          debugPrint(
+            'GeminiService.chatAboutArtifact: quota exceeded, '
+            'retrying in ${delay.inSeconds}s '
+            '(attempt ${attempt + 1}/$_maxRetries)',
+          );
+          await Future.delayed(delay);
+          continue;
+        }
+        debugPrint(
+          'GeminiService.chatAboutArtifact ERROR '
+          '(model: ${_resolveModelName()}): $e',
+        );
+        debugPrintStack(stackTrace: st);
+        return _fallback(fallbackArtifact);
+      }
+    }
+
+    return _fallback(fallbackArtifact);
+  }
+
+  String _buildFallbackPrompt(Artifact artifact, AiGuideRequest request) {
+    final buffer = StringBuffer()
+      ..writeln(
+        'You are the AI guide for Mtengatenga Cultural Museum in Malawi.',
+      )
+      ..writeln(
+        'Be grounded, respectful, and concise. Do not invent exhibit facts.',
+      )
+      ..writeln(
+        'If details are missing, say what is known and keep uncertainty brief.',
+      )
+      ..writeln('Answer in English only. Translation happens after generation.')
+      ..writeln();
+
+    switch (request.mode) {
+      case AiGuideMode.text:
+        buffer.writeln(
+          'TEXT MODE: Keep the response conversational and around 3 to 5 short sentences.',
+        );
+      case AiGuideMode.voice:
+        buffer.writeln(
+          'VOICE MODE: Keep the response natural and easy to follow out loud in 2 to 3 short sentences.',
+        );
+        if (request.language == 'en') {
+          buffer.writeln(
+            'If a Malawian term is hard for English TTS, you may spell it phonetically without showing the original spelling beside it.',
+          );
+        }
+      case AiGuideMode.tour:
+        buffer.writeln(
+          'TOUR MODE: Give 2 to 3 vivid narration sentences as if you are beside the artifact with the visitor.',
+        );
+    }
+
+    if (artifact.id != museumGuideArtifact.id) {
+      buffer
+        ..writeln()
+        ..writeln('SELECTED ARTIFACT:')
+        ..writeln('Name: ${artifact.name}');
+      if (artifact.subtitle?.isNotEmpty == true) {
+        buffer.writeln('Subtitle: ${artifact.subtitle}');
+      }
+      if (artifact.category?.isNotEmpty == true) {
+        buffer.writeln('Category: ${artifact.category}');
+      }
+      if (artifact.period?.isNotEmpty == true) {
+        buffer.writeln('Period: ${artifact.period}');
+      }
+      buffer.writeln('Description: ${artifact.description}');
+      if (artifact.culturalSignificance?.isNotEmpty == true) {
+        buffer.writeln(
+          'Cultural significance: ${artifact.culturalSignificance}',
+        );
+      }
+      if (artifact.additionalNotes?.isNotEmpty == true) {
+        buffer.writeln('Additional notes: ${artifact.additionalNotes}');
+      }
+      if (artifact.aiContext?.isNotEmpty == true) {
+        buffer.writeln('Museum guide notes: ${artifact.aiContext}');
+      }
+      if (artifact.location?.isNotEmpty == true) {
+        buffer.writeln('Location: ${artifact.location}');
+      }
+      if (artifact.timeline?.isNotEmpty == true) {
+        final timelineText = artifact.timeline!
+            .map((entry) => '${entry.year}: ${entry.event}')
+            .join('; ');
+        buffer.writeln('Timeline: $timelineText');
+      }
+    } else {
+      buffer
+        ..writeln()
+        ..writeln('MUSEUM OVERVIEW:')
+        ..writeln(
+          'Mtengatenga Cultural Museum helps visitors explore Malawian cultural heritage, especially Chewa traditions, artifacts, performances, and everyday life.',
+        );
+    }
+
+    if (request.history.isNotEmpty) {
+      buffer
+        ..writeln()
+        ..writeln('RECENT CONVERSATION:');
+      for (final message in request.history) {
+        final role = message.role == 'user' ? 'Visitor' : 'Guide';
+        buffer.writeln('$role: ${message.content}');
+      }
+    }
+
+    buffer
+      ..writeln()
+      ..writeln('Visitor question: ${request.query}')
+      ..writeln('Guide:');
+
+    return buffer.toString();
+  }
 
   String _fallback(Artifact artifact) {
     if (artifact.aiContext?.isNotEmpty == true) return artifact.aiContext!;
-    if (artifact.id != 'general' && artifact.description.isNotEmpty) {
+    if (artifact.id != museumGuideArtifact.id &&
+        artifact.description.isNotEmpty) {
       return artifact.description;
     }
     return 'Welcome to Mtengatenga Cultural Museum! I\'m here to help you explore Malawian heritage. What would you like to know?';
   }
 
-  // ── Cloud Function helpers ───────────────────────────────────────────────
-
   Future<String> _chatViaCloudFunction(
-    String prompt,
+    AiGuideRequest request,
     Artifact artifact,
   ) async {
     final client = HttpClient();
     try {
-      final request = await client.postUrl(
+      final httpRequest = await client.postUrl(
         Uri.parse('$_cloudFunctionUrl/ai-chat'),
       );
-      request.headers.contentType = ContentType.json;
-      request.add(utf8.encode(jsonEncode({'prompt': prompt})));
+      httpRequest.headers.contentType = ContentType.json;
+      httpRequest.add(utf8.encode(jsonEncode(request.toJson())));
 
-      final response = await request.close();
+      final response = await httpRequest.close();
       final body = await utf8.decoder.bind(response).join();
 
       if (response.statusCode != 200) {
@@ -294,16 +445,16 @@ class GeminiService {
     }
   }
 
-  Stream<String> _streamViaCloudFunction(String prompt) async* {
+  Stream<String> _streamViaCloudFunction(AiGuideRequest request) async* {
     final client = HttpClient();
     try {
-      final request = await client.postUrl(
+      final httpRequest = await client.postUrl(
         Uri.parse('$_cloudFunctionUrl/ai-chat-stream'),
       );
-      request.headers.contentType = ContentType.json;
-      request.add(utf8.encode(jsonEncode({'prompt': prompt})));
+      httpRequest.headers.contentType = ContentType.json;
+      httpRequest.add(utf8.encode(jsonEncode(request.toJson())));
 
-      final response = await request.close();
+      final response = await httpRequest.close();
 
       if (response.statusCode != 200) {
         final body = await utf8.decoder.bind(response).join();
@@ -313,7 +464,6 @@ class GeminiService {
         );
       }
 
-      // Parse SSE: each event is "data: <json>\n\n"
       var buffer = '';
       await for (final chunk in utf8.decoder.bind(response)) {
         buffer += chunk;

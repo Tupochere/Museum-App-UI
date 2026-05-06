@@ -27,17 +27,8 @@ class _ArtifactDetailsScreenState extends State<ArtifactDetailsScreen> {
   static const _cameraBgUrl =
       'https://lh3.googleusercontent.com/aida-public/AB6AXuCz7m3hfZ7WDj7tuYMeFX6xHQPagTZzocE8zajP23BAGdJBaOEaXK5GSJpLNvAUTUFOSkh3jLrxhMhGWVe6-cr-BY1eA3hTTTsGX2LAs5J9bJYMoQ2_cTNa127AVJD5XS6kOyRsfS8vsJJEEnDUeAYRY7wmvF4A37vJUbUzNCXBEmZLEVVMlVGuuBya0PZgTZ62_kZwSRND--6asi1c75TSltkoTzbHLG2fQGmMGj3-2UuOEJw9CyrNfaoA9FeqjJj-Tx47tepZSjqG';
 
-  // 3D thumb background-image :contentReference[oaicite:2]{index=2}
-  static const _artifactThumbUrl =
-      'https://lh3.googleusercontent.com/aida-public/AB6AXuAKUlU05rK5MKuYlSuD-BV6n6QjIwPXAnNt0YxOA8FHBxpaG_2p4cOL-NTijM4YJsTDbVuyShtdG2e24WC9hRd9Tx7LO1_R5tCYxAZuazAl-IRXpNEfdjl4qA26t9iWYUyqQ8hTw1Zd37r-mW3yFHojYdSUjtUmW8exjZSAPXtsffU4TxJAiyFrxIud2vjA1vvuT_XgK2jcJ6c1Y5YJVLezGmP4TEHfkEYRdrvOtIe8oA4mzJ3zBNi1vBBZ1rKsXnYL9R9GPYpcten6';
-
   @override
   Widget build(BuildContext context) {
-    final artifactThumbUrl =
-        widget.artifact?.modelThumbnailUrl ??
-        widget.artifact?.displayImageUrl ??
-        _artifactThumbUrl;
-
     return Scaffold(
       backgroundColor: Colors.black,
       floatingActionButton: FloatingActionButton.extended(
@@ -140,27 +131,10 @@ class _ArtifactDetailsScreenState extends State<ArtifactDetailsScreen> {
                     ),
                     const SizedBox(height: 14),
 
-                    // Header content (chips + title + thumb)
+                    // Header content (chips + title)
                     Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 24),
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Expanded(
-                            child: _HeaderTextBlock(artifact: widget.artifact),
-                          ),
-                          const SizedBox(width: 14),
-                          _Thumb3D(
-                            imageUrl: artifactThumbUrl,
-                            onTap: () {
-                              // UI only
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(content: Text('Open 3D (UI only)')),
-                              );
-                            },
-                          ),
-                        ],
-                      ),
+                      child: _HeaderTextBlock(artifact: widget.artifact),
                     ),
 
                     const SizedBox(height: 16),
@@ -332,29 +306,35 @@ class _HeaderTextBlock extends StatelessWidget {
       children: [
         Row(
           children: [
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              decoration: BoxDecoration(
-                color: const Color(0xFFE07A5F).withOpacity(0.10), // terracotta/10 :contentReference[oaicite:12]{index=12}
-                borderRadius: BorderRadius.circular(6),
-              ),
-              child: Text(
-                category,
-                style: TextStyle(
-                  color: Color(0xFFE07A5F),
-                  fontSize: 10,
-                  fontWeight: FontWeight.w900,
-                  letterSpacing: 1.2,
+            Flexible(
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFE07A5F).withOpacity(0.10), // terracotta/10 :contentReference[oaicite:12]{index=12}
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Text(
+                  category,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: Color(0xFFE07A5F),
+                    fontSize: 10,
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: 1.2,
+                  ),
                 ),
               ),
             ),
             const SizedBox(width: 10),
-            Text(
-              period,
-              style: TextStyle(
-                color: Color(0xFF78716C), // stone-500
-                fontSize: 12,
-                fontWeight: FontWeight.w700,
+            Flexible(
+              child: Text(
+                period,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: Color(0xFF78716C), // stone-500
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                ),
               ),
             ),
           ],
@@ -379,41 +359,6 @@ class _HeaderTextBlock extends StatelessWidget {
           ),
         ),
       ],
-    );
-  }
-}
-
-class _Thumb3D extends StatelessWidget {
-  const _Thumb3D({required this.imageUrl, required this.onTap});
-  final String imageUrl;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(12),
-      child: Container(
-        width: 80,
-        height: 80,
-        decoration: BoxDecoration(
-          color: const Color(0xFFE7E5E4), // stone-200 :contentReference[oaicite:14]{index=14}
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: const Color(0xFFD6D3D1)), // stone-300
-        ),
-        clipBehavior: Clip.antiAlias,
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            Image.network(imageUrl, fit: BoxFit.cover),
-            Container(
-              color: Colors.black.withOpacity(0.10),
-              alignment: Alignment.center,
-              child: const Icon(Icons.threed_rotation, color: Colors.white, size: 30),
-            ),
-          ],
-        ),
-      ),
     );
   }
 }

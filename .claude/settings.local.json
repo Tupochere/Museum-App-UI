@@ -45,7 +45,9 @@
       "Bash(find 'C:/Museum App UI/mtengatenga_ar/lib' -type f -name *.dart -exec grep -l \"user\\\\|profile\\\\|auth\" {})",
       "Bash(2)",
       "Bash(grep -E \"\\\\.\\(dart|ts|js\\)$\")",
-      "Bash(timeout 30 bash -c 'while [ ! -s \"C:/Users/eugen/AppData/Local/Temp/claude/C--Museum-App-UI/b413c4cb-c86d-4878-9455-ee07c86f42e2/tasks/b8q6d2g6p.output\" ] || ! grep -q \"issue\\\\|error\\\\|warning\\\\|No issues\" \"C:/Users/eugen/AppData/Local/Temp/claude/C--Museum-App-UI/b413c4cb-c86d-4878-9455-ee07c86f42e2/tasks/b8q6d2g6p.output\" 2>/dev/null; do sleep 2; done; cat \"C:/Users/eugen/AppData/Local/Temp/claude/C--Museum-App-UI/b413c4cb-c86d-4878-9455-ee07c86f42e2/tasks/b8q6d2g6p.output\"' 2>&1)"
+      "Bash(timeout 30 bash -c 'while [ ! -s \"C:/Users/eugen/AppData/Local/Temp/claude/C--Museum-App-UI/b413c4cb-c86d-4878-9455-ee07c86f42e2/tasks/b8q6d2g6p.output\" ] || ! grep -q \"issue\\\\|error\\\\|warning\\\\|No issues\" \"C:/Users/eugen/AppData/Local/Temp/claude/C--Museum-App-UI/b413c4cb-c86d-4878-9455-ee07c86f42e2/tasks/b8q6d2g6p.output\" 2>/dev/null; do sleep 2; done; cat \"C:/Users/eugen/AppData/Local/Temp/claude/C--Museum-App-UI/b413c4cb-c86d-4878-9455-ee07c86f42e2/tasks/b8q6d2g6p.output\"' 2>&1)",
+      "Bash(flutter analyze *)",
+      "Bash(npm test *)"
     ]
   },
   "enableAllProjectMcpServers": true,

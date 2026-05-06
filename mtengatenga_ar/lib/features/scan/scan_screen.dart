@@ -11,7 +11,7 @@ import '../../core/services/scan_history_service.dart';
 import '../../core/services/service_locator.dart';
 import '../../core/services/ticket_gate.dart';
 import '../../core/ui/states/state_view.dart';
-import '../../screens/artifact_viewer_screen.dart';
+import '../../screens/adaptive_navigation_screen.dart';
 import '../../services/search_service.dart';
 import '../../services/vision_service.dart';
 import '../../theme/app_tokens.dart';
@@ -21,8 +21,13 @@ import '../artifact/artifact_not_found_screen.dart';
 import 'scan_help_screen.dart';
 import 'scan_history_screen.dart';
 
-/// Minimum similarity score to consider a vision-to-artifact match valid.
+/// Minimum similarity score to consider a vision-to-artifact match valid
+/// when falling back to describe-then-semantic-search.
 const double _visionMatchThreshold = 0.55;
+
+/// Minimum confidence to accept a match from the dedicated
+/// `/identify-artifact` Gemini Vision endpoint.
+const double _identifyArtifactConfidenceThreshold = 0.6;
 
 class ScanScreen extends StatefulWidget {
   const ScanScreen({super.key});
@@ -174,6 +179,8 @@ class _ScanScreenState extends State<ScanScreen>
   Future<void> _captureAndMatch() async {
     if (_visionCamera == null || !_visionCamera!.value.isInitialized) return;
 
+    final navigator = Navigator.of(context);
+
     try {
       final xFile = await _visionCamera!.takePicture();
       final bytes = await xFile.readAsBytes();
@@ -183,49 +190,80 @@ class _ScanScreenState extends State<ScanScreen>
         _state = ScanViewState.visionAnalyzing;
       });
 
-      // Analyze image
       final imageBase64 = await VisionService.compressAndEncode(bytes);
-      final prompt = _visionService.buildVisionPrompt(isFollowUp: false);
-      final description = await _visionService.analyzeImage(
-        imageBase64: imageBase64,
-        prompt: prompt,
-      );
 
+      // 1) Direct artifact identification via Gemini Vision against the catalog.
+      final identification = await _visionService.identifyArtifact(
+        imageBase64: imageBase64,
+      );
       if (!mounted) return;
 
-      // Check for error responses
-      if (description.startsWith('Sorry') ||
-          description.startsWith('Cloud Function URL')) {
+      if (identification != null &&
+          identification.hasMatch &&
+          identification.confidence >= _identifyArtifactConfidenceThreshold) {
+        final repo = _artifactRepository;
+        if (repo != null) {
+          final artifact = await repo.getArtifactById(identification.artifactId);
+          if (!mounted) return;
+
+          if (artifact != null) {
+            setState(() => _state = ScanViewState.visionFound);
+
+            try {
+              await _scanHistoryService?.addScan(artifact);
+            } catch (_) {}
+
+            await navigator.push(
+              MaterialPageRoute(
+                builder: (_) => ArtifactDetailsScreen(artifact: artifact),
+              ),
+            );
+            if (mounted) _resetVision();
+            return;
+          }
+        }
+      }
+
+      // 2) Fallback — describe the image and run semantic search on the description.
+      final fallbackDescription = identification?.description.isNotEmpty == true
+          ? identification!.description
+          : await _visionService.analyzeImage(
+              imageBase64: imageBase64,
+              prompt: _visionService.buildVisionPrompt(isFollowUp: false),
+            );
+      if (!mounted) return;
+
+      if (fallbackDescription.startsWith('Sorry') ||
+          fallbackDescription.startsWith('Cloud Function URL')) {
         setState(() {
-          _visionDescription = description;
+          _visionDescription = fallbackDescription;
           _state = ScanViewState.visionNoMatch;
         });
         return;
       }
 
-      _visionDescription = description;
+      _visionDescription = fallbackDescription;
 
-      // Try to match against DB artifacts via semantic search
       final search = _searchService;
       if (search != null) {
-        final results = await search.search(description);
+        final results = await search.search(fallbackDescription);
         if (!mounted) return;
 
         if (results.isNotEmpty &&
             results.first.similarity >= _visionMatchThreshold) {
-          // Fetch full artifact
           final repo = _artifactRepository;
           if (repo != null) {
             final artifact = await repo.getArtifactById(results.first.id);
             if (!mounted) return;
 
             if (artifact != null) {
-              setState(() {
-                _state = ScanViewState.visionFound;
-              });
+              setState(() => _state = ScanViewState.visionFound);
 
-              // Navigate to details
-              await Navigator.of(context).push(
+              try {
+                await _scanHistoryService?.addScan(artifact);
+              } catch (_) {}
+
+              await navigator.push(
                 MaterialPageRoute(
                   builder: (_) => ArtifactDetailsScreen(artifact: artifact),
                 ),
@@ -237,7 +275,6 @@ class _ScanScreenState extends State<ScanScreen>
         }
       }
 
-      // No match found
       if (mounted) {
         setState(() => _state = ScanViewState.visionNoMatch);
       }
@@ -624,7 +661,7 @@ class _ScanScreenState extends State<ScanScreen>
           try {
             await Navigator.of(context).push(
               MaterialPageRoute(
-                builder: (_) => ArtifactViewerScreen(artifactId: qrCode),
+                builder: (_) => AdaptiveNavigationScreen(artifactId: qrCode),
               ),
             );
           } catch (_) {}

@@ -7,6 +7,7 @@ import '../domain/repositories/artifact_repository.dart';
 import '../domain/repositories/room_repository.dart';
 import 'auth_service.dart';
 import 'auth_state.dart';
+import 'indoor_navigation_service.dart';
 import 'saved_artifacts_service.dart';
 import 'scan_history_service.dart';
 import 'supabase_service.dart';
@@ -39,11 +40,10 @@ class ServiceLocator {
     _getIt.registerLazySingleton<IArtifactRepository>(
       ArtifactRepositoryBrick.new,
     );
-    _getIt.registerLazySingleton<IRoomRepository>(
-      RoomRepositoryBrick.new,
-    );
-    _getIt.registerLazySingleton<ScanHistoryService>(
-      ScanHistoryService.new,
+    _getIt.registerLazySingleton<IRoomRepository>(RoomRepositoryBrick.new);
+    _getIt.registerLazySingleton<ScanHistoryService>(ScanHistoryService.new);
+    _getIt.registerLazySingleton<IndoorNavigationService>(
+      IndoorNavigationService.new,
     );
 
     final savedArtifactsService = SavedArtifactsService();
@@ -56,9 +56,7 @@ class ServiceLocator {
     _getIt.registerLazySingleton<TranslationService>(
       () => TranslationService(languageState),
     );
-    _getIt.registerLazySingleton<SearchService>(
-      SearchService.new,
-    );
+    _getIt.registerLazySingleton<SearchService>(SearchService.new);
 
     // Notification badge (load saved last-read timestamp)
     final badgeService = NotificationBadgeService();
@@ -66,9 +64,7 @@ class ServiceLocator {
     _getIt.registerSingleton<NotificationBadgeService>(badgeService);
 
     // Notification service (shared singleton across screens)
-    _getIt.registerLazySingleton<NotificationService>(
-      NotificationService.new,
-    );
+    _getIt.registerLazySingleton<NotificationService>(NotificationService.new);
 
     // Push notification service (FCM token registration)
     final pushService = PushNotificationService();

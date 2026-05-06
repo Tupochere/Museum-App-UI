@@ -35,6 +35,25 @@ flutter test test/path/to/test_file.dart
 dart run build_runner build --delete-conflicting-outputs
 ```
 
+### Cloud Functions Deploy
+
+Run from inside `cloud_functions/` (PowerShell):
+
+```powershell
+gcloud.cmd functions deploy aiProxy `
+  --gen2 `
+  --runtime=nodejs20 `
+  --region=us-central1 `
+  --trigger-http `
+  --allow-unauthenticated `
+  --entry-point=aiProxy `
+  --memory=512MB `
+  --timeout=120s `
+  --min-instances=1 `
+  --source=. `
+  --env-vars-file=env.yaml
+```
+
 ## Environment Setup
 
 Create `mtengatenga_ar/.env` with:

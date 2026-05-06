@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "npx @google-cloud/functions-framework --target=aiProxy --port=8080",
     "dev:checked": "node ./scripts/check-local-gcloud.js && npm run dev",
-    "check:local": "node ./scripts/check-local-gcloud.js"
+    "check:local": "node ./scripts/check-local-gcloud.js",
+    "test": "node --test"
   },
   "engines": {
     "node": "20"

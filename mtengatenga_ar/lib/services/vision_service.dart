@@ -5,6 +5,25 @@ import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:http/http.dart' as http;
 import 'package:image/image.dart' as img;
 
+class ArtifactIdentification {
+  const ArtifactIdentification({
+    required this.artifactId,
+    required this.confidence,
+    required this.reasoning,
+    required this.description,
+  });
+
+  /// Empty string when no confident match.
+  final String artifactId;
+  final double confidence;
+  final String reasoning;
+
+  /// Visitor-facing fallback description when no artifact matches.
+  final String description;
+
+  bool get hasMatch => artifactId.isNotEmpty;
+}
+
 class VisionService {
   String get _cloudFunctionUrl =>
       dotenv.env['CLOUD_FUNCTION_URL']?.trim() ?? '';
@@ -67,6 +86,48 @@ class VisionService {
       debugPrint('VisionService error: $e');
       debugPrintStack(stackTrace: st);
       return 'Sorry, something went wrong. Please try again.';
+    }
+  }
+
+  /// Ask Cloud Function to match the image against the artifact catalog.
+  /// Returns null when the endpoint is unreachable or errors out — caller
+  /// should fall back to describe-then-search.
+  Future<ArtifactIdentification?> identifyArtifact({
+    required String imageBase64,
+  }) async {
+    final url = _cloudFunctionUrl;
+    if (url.isEmpty) return null;
+
+    try {
+      final response = await http.post(
+        Uri.parse('$url/identify-artifact'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'image': {
+            'mimeType': 'image/jpeg',
+            'data': imageBase64,
+          },
+        }),
+      );
+
+      if (response.statusCode != 200) {
+        debugPrint(
+          '/identify-artifact failed (${response.statusCode}): ${response.body}',
+        );
+        return null;
+      }
+
+      final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+      return ArtifactIdentification(
+        artifactId: (decoded['artifactId'] as String?)?.trim() ?? '',
+        confidence: ((decoded['confidence'] as num?) ?? 0).toDouble(),
+        reasoning: (decoded['reasoning'] as String?) ?? '',
+        description: (decoded['description'] as String?) ?? '',
+      );
+    } catch (e, st) {
+      debugPrint('VisionService.identifyArtifact error: $e');
+      debugPrintStack(stackTrace: st);
+      return null;
     }
   }
 

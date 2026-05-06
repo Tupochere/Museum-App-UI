@@ -1,0 +1,154 @@
+[
+  {
+    "id": "artifact-fact-1",
+    "mode": "text",
+    "category": "artifact_fact",
+    "artifactId": "selected-artifact",
+    "query": "What was this artifact used for?",
+    "expectation": "Answer from selected artifact evidence first."
+  },
+  {
+    "id": "artifact-fact-2",
+    "mode": "text",
+    "category": "artifact_fact",
+    "artifactId": "selected-artifact",
+    "query": "Who used this in the past?",
+    "expectation": "Use exhibit evidence and avoid invented user groups."
+  },
+  {
+    "id": "artifact-fact-3",
+    "mode": "voice",
+    "category": "artifact_fact",
+    "artifactId": "selected-artifact",
+    "query": "Tell me the main story behind this artifact.",
+    "expectation": "Stay concise for spoken playback."
+  },
+  {
+    "id": "artifact-fact-4",
+    "mode": "tour",
+    "category": "artifact_fact",
+    "artifactId": "selected-artifact",
+    "query": "Give me a narration as I stand in front of this object.",
+    "expectation": "Sound like a live museum guide."
+  },
+  {
+    "id": "follow-up-1",
+    "mode": "text",
+    "category": "follow_up",
+    "artifactId": "selected-artifact",
+    "query": "Who used it?",
+    "expectation": "Resolve the pronoun from recent history."
+  },
+  {
+    "id": "follow-up-2",
+    "mode": "voice",
+    "category": "follow_up",
+    "artifactId": "selected-artifact",
+    "query": "Why was it important?",
+    "expectation": "Use short grounded follow-up reasoning."
+  },
+  {
+    "id": "follow-up-3",
+    "mode": "text",
+    "category": "follow_up",
+    "artifactId": "selected-artifact",
+    "query": "Was it still used later?",
+    "expectation": "Use timeline or admit if the timeline is missing."
+  },
+  {
+    "id": "broad-1",
+    "mode": "text",
+    "category": "broad_culture",
+    "query": "Tell me about Chewa culture.",
+    "expectation": "Allow broader cultural background and label it clearly."
+  },
+  {
+    "id": "broad-2",
+    "mode": "text",
+    "category": "broad_culture",
+    "query": "Explain Nyau traditions.",
+    "expectation": "Use museum-first grounding with general background if needed."
+  },
+  {
+    "id": "broad-3",
+    "mode": "voice",
+    "category": "broad_culture",
+    "query": "What can I explore here in the museum?",
+    "expectation": "Retrieve relevant artifacts and stay concise."
+  },
+  {
+    "id": "broad-4",
+    "mode": "text",
+    "category": "broad_culture",
+    "query": "What are the featured artifacts here?",
+    "expectation": "Use retrieval instead of hallucinating a list."
+  },
+  {
+    "id": "comparison-1",
+    "mode": "text",
+    "category": "comparison",
+    "artifactId": "selected-artifact",
+    "query": "What other artifact here is similar to this one?",
+    "expectation": "Retrieve related artifacts and compare carefully."
+  },
+  {
+    "id": "comparison-2",
+    "mode": "voice",
+    "category": "comparison",
+    "artifactId": "selected-artifact",
+    "query": "How is this different from other ceremonial objects?",
+    "expectation": "Use concise comparison grounded in retrieved neighbors."
+  },
+  {
+    "id": "comparison-3",
+    "mode": "text",
+    "category": "comparison",
+    "query": "Which artifact best represents traditional music here?",
+    "expectation": "Retrieve candidates and answer with evidence."
+  },
+  {
+    "id": "unsupported-1",
+    "mode": "text",
+    "category": "unsupported_fact",
+    "artifactId": "selected-artifact",
+    "query": "Which exact village made this in 1823?",
+    "expectation": "Do not invent provenance details."
+  },
+  {
+    "id": "unsupported-2",
+    "mode": "voice",
+    "category": "unsupported_fact",
+    "artifactId": "selected-artifact",
+    "query": "What was the maker's full name?",
+    "expectation": "Admit missing evidence briefly."
+  },
+  {
+    "id": "unsupported-3",
+    "mode": "text",
+    "category": "unsupported_fact",
+    "query": "What is the exact oldest artifact in the whole museum?",
+    "expectation": "Avoid certainty if retrieval lacks proof."
+  },
+  {
+    "id": "out-of-scope-1",
+    "mode": "text",
+    "category": "out_of_scope",
+    "query": "Who won the NBA finals?",
+    "expectation": "Politely redirect to museum topics."
+  },
+  {
+    "id": "out-of-scope-2",
+    "mode": "voice",
+    "category": "out_of_scope",
+    "query": "What is the weather in Lilongwe today?",
+    "expectation": "Politely redirect to museum topics."
+  },
+  {
+    "id": "translation-1",
+    "mode": "text",
+    "category": "translation_path",
+    "artifactId": "selected-artifact",
+    "query": "Explain this so a Chichewa speaker can understand it.",
+    "expectation": "Generate stable English first so downstream translation can handle it."
+  }
+]
