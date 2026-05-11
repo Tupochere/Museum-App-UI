@@ -47,7 +47,10 @@
       "Bash(grep -E \"\\\\.\\(dart|ts|js\\)$\")",
       "Bash(timeout 30 bash -c 'while [ ! -s \"C:/Users/eugen/AppData/Local/Temp/claude/C--Museum-App-UI/b413c4cb-c86d-4878-9455-ee07c86f42e2/tasks/b8q6d2g6p.output\" ] || ! grep -q \"issue\\\\|error\\\\|warning\\\\|No issues\" \"C:/Users/eugen/AppData/Local/Temp/claude/C--Museum-App-UI/b413c4cb-c86d-4878-9455-ee07c86f42e2/tasks/b8q6d2g6p.output\" 2>/dev/null; do sleep 2; done; cat \"C:/Users/eugen/AppData/Local/Temp/claude/C--Museum-App-UI/b413c4cb-c86d-4878-9455-ee07c86f42e2/tasks/b8q6d2g6p.output\"' 2>&1)",
       "Bash(flutter analyze *)",
-      "Bash(npm test *)"
+      "Bash(npm test *)",
+      "Bash(findstr /N /R /C:\"Navigator\" /C:\"ArViewerScreen\" /C:\"ArtifactDetail\" /C:\"push\\(\")",
+      "Bash(kill %1)",
+      "Bash(jobs)"
     ]
   },
   "enableAllProjectMcpServers": true,

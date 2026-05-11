@@ -110,5 +110,37 @@ void main() {
       expect(service.currentTarget?.id, 'artifact_3');
       expect(service.currentLegDistanceMeters, closeTo(1.11, 0.01));
     });
+
+    test('startArNavigationFromMarker(1) routes from marker through A2-A4', () {
+      final service = IndoorNavigationService()
+        ..startArNavigationFromMarker(1);
+
+      expect(service.mode.name, 'active');
+      expect(service.routeStartLabel, 'Marker 1');
+      expect(
+        service.routeStartPoint.xMeters,
+        closeTo(service.artifactById('artifact_1').point.xMeters, 0.001),
+      );
+      expect(
+        service.routeStartPoint.yMeters,
+        closeTo(service.artifactById('artifact_1').point.yMeters, 0.001),
+      );
+      expect(service.activeRoute.map((a) => a.id), [
+        'artifact_2',
+        'artifact_3',
+        'artifact_4',
+      ]);
+      expect(service.currentTarget?.id, 'artifact_2');
+    });
+
+    test('startArNavigationFromMarker(4) completes immediately', () {
+      final service = IndoorNavigationService()
+        ..startArNavigationFromMarker(4);
+
+      expect(service.mode.name, 'complete');
+      expect(service.activeRoute, isEmpty);
+      expect(service.currentTarget, isNull);
+      expect(service.routeStartLabel, 'Marker 4');
+    });
   });
 }

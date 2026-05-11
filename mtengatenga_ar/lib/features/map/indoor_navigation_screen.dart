@@ -6,6 +6,7 @@ import 'package:get_it/get_it.dart';
 import '../../core/models/indoor_navigation.dart';
 import '../../core/services/indoor_navigation_service.dart';
 import '../../theme/app_tokens.dart';
+import '../ar/ar_navigation_screen.dart';
 
 class IndoorNavigationScreen extends StatefulWidget {
   const IndoorNavigationScreen({
@@ -44,6 +45,11 @@ class _IndoorNavigationScreenState extends State<IndoorNavigationScreen> {
       appBar: AppBar(
         title: const Text('Indoor Navigation'),
         actions: [
+          IconButton(
+            tooltip: 'Switch to AR',
+            onPressed: _openArNavigation,
+            icon: const Icon(Icons.view_in_ar),
+          ),
           IconButton(
             tooltip: 'Reset route',
             onPressed: _reset,
@@ -119,6 +125,17 @@ class _IndoorNavigationScreenState extends State<IndoorNavigationScreen> {
   }
 
   void _reset() {
+    setState(() {
+      _selectedDestination = _fullTourValue;
+      _navigationService.reset();
+    });
+  }
+
+  Future<void> _openArNavigation() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const ArNavigationScreen()),
+    );
+    if (!mounted) return;
     setState(() {
       _selectedDestination = _fullTourValue;
       _navigationService.reset();

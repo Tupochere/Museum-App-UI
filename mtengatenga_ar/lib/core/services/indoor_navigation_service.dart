@@ -154,6 +154,23 @@ class IndoorNavigationService {
     _mode = IndoorNavigationMode.preview;
   }
 
+  void startArNavigationFromMarker(int markerNumber) {
+    final markerId = 'artifact_$markerNumber';
+    final marker = artifactById(markerId);
+    final remaining = fullTourOrder
+        .skip(markerNumber)
+        .map(artifactById)
+        .toList();
+
+    _routeStartPoint = marker.point;
+    _routeStartLabel = 'Marker $markerNumber';
+    _activeRoute = remaining;
+    _activeIndex = 0;
+    _mode = remaining.isEmpty
+        ? IndoorNavigationMode.complete
+        : IndoorNavigationMode.active;
+  }
+
   void startTourAfterArtifact(String artifactId) {
     final currentArtifact = artifactById(artifactId);
     final startIndex = fullTourOrder.indexOf(artifactId);

@@ -11,11 +11,11 @@ import '../../core/services/scan_history_service.dart';
 import '../../core/services/service_locator.dart';
 import '../../core/services/ticket_gate.dart';
 import '../../core/ui/states/state_view.dart';
-import '../../screens/adaptive_navigation_screen.dart';
 import '../../services/search_service.dart';
 import '../../services/vision_service.dart';
 import '../../theme/app_tokens.dart';
 import '../ai_guide/ai_guide_screen.dart';
+import '../../screens/artifact_viewer_screen.dart';
 import '../artifact/artifact_details_screen.dart';
 import '../artifact/artifact_not_found_screen.dart';
 import 'scan_help_screen.dart';
@@ -661,7 +661,7 @@ class _ScanScreenState extends State<ScanScreen>
           try {
             await Navigator.of(context).push(
               MaterialPageRoute(
-                builder: (_) => AdaptiveNavigationScreen(artifactId: qrCode),
+                builder: (_) => ArtifactViewerScreen(artifactId: qrCode),
               ),
             );
           } catch (_) {}
