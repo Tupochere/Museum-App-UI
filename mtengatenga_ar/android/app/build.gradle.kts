@@ -71,6 +71,11 @@ android {
             } else {
                 signingConfigs.getByName("debug")
             }
+            // Disable R8/resource shrinking: arcore_flutter_plugin references
+            // deprecated Sceneform classes that aren't on the classpath, which
+            // makes R8's missing-class check fail the release build.
+            isMinifyEnabled = false
+            isShrinkResources = false
         }
     }
 }
