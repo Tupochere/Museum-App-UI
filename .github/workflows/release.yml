@@ -69,19 +69,22 @@ jobs:
         run: |
           set -x
           for gradle in $(find ~/.pub-cache/hosted/pub.dev/arcore_flutter_plugin-*/android -maxdepth 1 -name build.gradle); do
-            if grep -qE "namespace[[:space:]]+['\"]" "$gradle"; then
-              echo "Already has namespace: $gradle"; continue
+            # Bump the ancient compileSdk (29) so androidx resources such as
+            # android:attr/lStar (API 31+) resolve during resource linking.
+            sed -i -E 's/compileSdkVersion[[:space:]]+[0-9]+/compileSdkVersion 34/' "$gradle"
+            # Inject a namespace (AGP 8 requires one; the plugin ships without).
+            if ! grep -qE "namespace[[:space:]]+['\"]" "$gradle"; then
+              ns="com.difrancescogianmarco.arcore_flutter_plugin"
+              manifest="$(dirname "$gradle")/src/main/AndroidManifest.xml"
+              if [ -f "$manifest" ]; then
+                p=$(grep -oP 'package="\K[^"]+' "$manifest" | head -1 || true)
+                [ -n "$p" ] && ns="$p"
+              fi
+              sed -i "0,/^android {/s|^android {|android {\n    namespace \"$ns\"|" "$gradle"
+              echo "Patched namespace -> $ns"
             fi
-            ns="com.difrancescogianmarco.arcore_flutter_plugin"
-            manifest="$(dirname "$gradle")/src/main/AndroidManifest.xml"
-            if [ -f "$manifest" ]; then
-              p=$(grep -oP 'package="\K[^"]+' "$manifest" | head -1 || true)
-              [ -n "$p" ] && ns="$p"
-            fi
-            sed -i "0,/^android {/s|^android {|android {\n    namespace \"$ns\"|" "$gradle"
-            echo "Patched $gradle -> namespace $ns"
+            echo "=== $gradle ==="; grep -nE "compileSdkVersion|namespace" "$gradle" || true
           done
-          find ~/.pub-cache/hosted/pub.dev/arcore_flutter_plugin-*/android -maxdepth 1 -name build.gradle -exec grep -Hn namespace {} \; || true
 
       - name: Build release APK
         run: flutter build apk --release
