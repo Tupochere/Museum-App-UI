@@ -27,9 +27,13 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      # Pinned to the version the app is developed against. Newer Flutter
+      # drops the namespace shim that legacy plugins (arcore_flutter_plugin)
+      # rely on, which breaks the release build.
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
+          flutter-version: 3.38.3
           channel: stable
           cache: true
 
@@ -60,15 +64,22 @@ jobs:
       - name: Build release APK
         run: flutter build apk --release
 
-      - name: Rename APK with version tag
+      # Produce two copies: a versioned name for the archive, and a stable
+      # name so a landing page can link to a permanent "latest" download URL:
+      #   https://github.com/Tupochere/Museum-App-UI/releases/latest/download/mtengatenga-ar.apk
+      - name: Stage APKs
         run: |
           mkdir -p ../dist
           cp build/app/outputs/flutter-apk/app-release.apk \
              "../dist/mtengatenga-ar-${{ github.ref_name }}.apk"
+          cp build/app/outputs/flutter-apk/app-release.apk \
+             ../dist/mtengatenga-ar.apk
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/mtengatenga-ar-${{ github.ref_name }}.apk
+          files: |
+            dist/mtengatenga-ar-${{ github.ref_name }}.apk
+            dist/mtengatenga-ar.apk
           generate_release_notes: true
           fail_on_unmatched_files: true
