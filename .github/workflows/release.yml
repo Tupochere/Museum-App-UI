@@ -2,10 +2,13 @@ name: Build & Publish APK
 
 # Triggers when you push a version tag, e.g.:
 #   git tag v1.1.0 && git push origin v1.1.0
+# Also runnable on-demand (workflow_dispatch) to validate the build WITHOUT
+# publishing a Release — the publish step is guarded to tag pushes only.
 on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
 
 permissions:
   contents: write # required to create the GitHub Release
@@ -86,6 +89,26 @@ jobs:
             echo "=== $gradle ==="; grep -nE "compileSdkVersion|namespace" "$gradle" || true
           done
 
+      # arcore_flutter_plugin 0.1.0 passes a nullable MotionEvent straight into
+      # GestureDetector.onTouchEvent(), which the modern K2 Kotlin compiler
+      # rejects because onTouchEvent's parameter is non-null (old Kotlin only
+      # warned). Rewrite the touch handler to be null-safe. This is the last
+      # compile error the plugin produces (Kotlin reports all type errors in one
+      # pass, and only this one appears).
+      - name: Patch legacy plugin Kotlin null-safety
+        run: |
+          set -x
+          patched=0
+          for kt in $(find ~/.pub-cache/hosted/pub.dev/arcore_flutter_plugin-*/android/src/main/kotlin -name ArCoreView.kt); do
+            sed -i 's|gestureDetector\.onTouchEvent(event)|event?.let { gestureDetector.onTouchEvent(it) } ?: false|' "$kt"
+            echo "=== $kt ==="; sed -n '388,392p' "$kt"
+            grep -q 'onTouchEvent(it)' "$kt" && patched=1
+          done
+          if [ "$patched" -ne 1 ]; then
+            echo "ERROR: expected null-safety patch was not applied to ArCoreView.kt" >&2
+            exit 1
+          fi
+
       - name: Build release APK
         run: flutter build apk --release
 
@@ -100,7 +123,17 @@ jobs:
           cp build/app/outputs/flutter-apk/app-release.apk \
              ../dist/mtengatenga-ar.apk
 
+      # Always expose the built APK as a workflow artifact so validation runs
+      # (workflow_dispatch) yield a downloadable APK without publishing a Release.
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mtengatenga-ar-apk
+          path: mtengatenga_ar/build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+
       - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: |
