@@ -11,6 +11,7 @@ import 'indoor_navigation_service.dart';
 import 'saved_artifacts_service.dart';
 import 'scan_history_service.dart';
 import 'supabase_service.dart';
+import 'update_service.dart';
 import '../../services/notification_badge_service.dart';
 import '../../services/notification_service.dart';
 import '../../services/push_notification_service.dart';
@@ -57,6 +58,7 @@ class ServiceLocator {
       () => TranslationService(languageState),
     );
     _getIt.registerLazySingleton<SearchService>(SearchService.new);
+    _getIt.registerLazySingleton<UpdateService>(UpdateService.new);
 
     // Notification badge (load saved last-read timestamp)
     final badgeService = NotificationBadgeService();

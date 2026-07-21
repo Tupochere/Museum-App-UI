@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:get_it/get_it.dart';
 import '../../../features/home/mtengatenga_home_screen.dart';
 import '../../../features/profile/profile_preferences_screen.dart';
 import '../../../features/saved/saved_artifacts_screen.dart';
 import '../../../features/tickets/tickets_hub_screen.dart';
 import '../../../theme/app_tokens.dart';
+import '../../services/update_service.dart';
+import '../update_prompt.dart';
 
 class AppShell extends StatefulWidget {
   const AppShell({super.key});
@@ -14,6 +17,20 @@ class AppShell extends StatefulWidget {
 
 class _AppShellState extends State<AppShell> {
   int _tab = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _checkForUpdate());
+  }
+
+  Future<void> _checkForUpdate() async {
+    if (!GetIt.instance.isRegistered<UpdateService>()) return;
+    final info = await GetIt.instance<UpdateService>().checkForUpdate();
+    if (info != null && mounted) {
+      await UpdatePrompt.show(context, info);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
