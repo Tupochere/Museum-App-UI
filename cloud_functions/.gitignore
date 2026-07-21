@@ -1,0 +1,6 @@
+# Secrets — real values live only in the deploy env / GCP Secret Manager
+# (use env.yaml.example as the template)
+env.yaml
+
+# Dependencies — install with `npm ci`
+node_modules/
