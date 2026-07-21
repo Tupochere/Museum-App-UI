@@ -61,6 +61,20 @@ jobs:
       - name: Generate Brick adapters
         run: dart run build_runner build --delete-conflicting-outputs
 
+      # arcore_flutter_plugin 0.1.0 (unmaintained) declares no namespace, which
+      # AGP 8.x requires. Inject it from the plugin's own AndroidManifest package
+      # so the release build can configure the module.
+      - name: Patch legacy plugin namespaces
+        run: |
+          for manifest in $(find ~/.pub-cache/hosted/pub.dev/arcore_flutter_plugin-*/android -name AndroidManifest.xml); do
+            gradle="$(dirname "$manifest")/build.gradle"
+            pkg=$(grep -oP 'package="\K[^"]+' "$manifest" | head -1)
+            if [ -n "$pkg" ] && [ -f "$gradle" ] && ! grep -q "namespace" "$gradle"; then
+              sed -i "s/android {/android {\n    namespace \"$pkg\"/" "$gradle"
+              echo "Patched $gradle with namespace $pkg"
+            fi
+          done
+
       - name: Build release APK
         run: flutter build apk --release
 
