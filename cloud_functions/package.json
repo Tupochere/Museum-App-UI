@@ -1,0 +1,24 @@
+{
+  "name": "mtengatenga-ai-proxy",
+  "version": "1.0.0",
+  "description": "Cloud Function proxy for Vertex AI and Cloud TTS",
+  "main": "index.js",
+  "scripts": {
+    "dev": "npx @google-cloud/functions-framework --target=aiProxy --port=8080",
+    "dev:checked": "node ./scripts/check-local-gcloud.js && npm run dev",
+    "check:local": "node ./scripts/check-local-gcloud.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": "20"
+  },
+  "dependencies": {
+    "@google-cloud/functions-framework": "^3.0.0",
+    "@google-cloud/vertexai": "^1.0.0",
+    "@google-cloud/text-to-speech": "^5.0.0",
+    "@google-cloud/translate": "^8.0.0",
+    "express": "^4.18.0",
+    "firebase-admin": "^12.0.0",
+    "google-auth-library": "^9.0.0"
+  }
+}

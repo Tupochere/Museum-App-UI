@@ -1,3 +1,6 @@
+import 'dart:typed_data';
+
+import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 
@@ -6,13 +9,25 @@ import '../../core/domain/repositories/artifact_repository.dart';
 import '../../core/models/ui_models.dart';
 import '../../core/services/scan_history_service.dart';
 import '../../core/services/service_locator.dart';
+import '../../core/services/ticket_gate.dart';
 import '../../core/ui/states/state_view.dart';
-import '../../screens/artifact_viewer_screen.dart';
+import '../../services/search_service.dart';
+import '../../services/vision_service.dart';
 import '../../theme/app_tokens.dart';
+import '../ai_guide/ai_guide_screen.dart';
+import '../../screens/artifact_viewer_screen.dart';
 import '../artifact/artifact_details_screen.dart';
 import '../artifact/artifact_not_found_screen.dart';
 import 'scan_help_screen.dart';
 import 'scan_history_screen.dart';
+
+/// Minimum similarity score to consider a vision-to-artifact match valid
+/// when falling back to describe-then-semantic-search.
+const double _visionMatchThreshold = 0.55;
+
+/// Minimum confidence to accept a match from the dedicated
+/// `/identify-artifact` Gemini Vision endpoint.
+const double _identifyArtifactConfidenceThreshold = 0.6;
 
 class ScanScreen extends StatefulWidget {
   const ScanScreen({super.key});
@@ -26,6 +41,11 @@ class _ScanScreenState extends State<ScanScreen>
   late final AnimationController _scanController;
   late final MobileScannerController _cameraController;
 
+  // ── Mode ────────────────────────────────────────────────────────────────
+  ScanMode _mode = ScanMode.qr;
+  bool _isSwitchingMode = false;
+
+  // ── QR state ────────────────────────────────────────────────────────────
   bool _flashOn = false;
   ScanViewState _state = ScanViewState.searching;
   Artifact? _scannedArtifact;
@@ -33,6 +53,13 @@ class _ScanScreenState extends State<ScanScreen>
   bool _hasNavigatedToDetails = false;
   String? _lastScanError;
   String? _lastScannedValue;
+
+  // ── Vision state ────────────────────────────────────────────────────────
+  CameraController? _visionCamera;
+  bool _isVisionCameraReady = false;
+  Uint8List? _capturedImageBytes;
+  String? _visionDescription;
+  final _visionService = VisionService();
 
   IArtifactRepository? get _artifactRepository {
     final getIt = ServiceLocator.instance;
@@ -44,6 +71,12 @@ class _ScanScreenState extends State<ScanScreen>
     final getIt = ServiceLocator.instance;
     if (!getIt.isRegistered<ScanHistoryService>()) return null;
     return getIt<ScanHistoryService>();
+  }
+
+  SearchService? get _searchService {
+    final getIt = ServiceLocator.instance;
+    if (!getIt.isRegistered<SearchService>()) return null;
+    return getIt<SearchService>();
   }
 
   @override
@@ -64,37 +97,281 @@ class _ScanScreenState extends State<ScanScreen>
   void dispose() {
     _scanController.dispose();
     _cameraController.dispose();
+    _visionCamera?.dispose();
     super.dispose();
   }
+
+  // ── Mode switching ────────────────────────────────────────────────────────
+
+  Future<void> _switchMode(ScanMode newMode) async {
+    if (newMode == _mode || _isSwitchingMode) return;
+    setState(() => _isSwitchingMode = true);
+
+    try {
+      if (newMode == ScanMode.vision) {
+        // Stop QR camera, start vision camera
+        try {
+          await _cameraController.stop();
+        } catch (_) {}
+
+        await _initVisionCamera();
+        setState(() {
+          _mode = ScanMode.vision;
+          _state = ScanViewState.visionCapturing;
+          _capturedImageBytes = null;
+          _visionDescription = null;
+
+        });
+      } else {
+        // Stop vision camera, start QR camera
+        await _disposeVisionCamera();
+        try {
+          await _cameraController.start();
+        } catch (_) {}
+
+        setState(() {
+          _mode = ScanMode.qr;
+          _state = ScanViewState.searching;
+          _scannedArtifact = null;
+          _isProcessing = false;
+          _hasNavigatedToDetails = false;
+        });
+      }
+    } finally {
+      if (mounted) setState(() => _isSwitchingMode = false);
+    }
+  }
+
+  Future<void> _initVisionCamera() async {
+    try {
+      final cameras = await availableCameras();
+      if (cameras.isEmpty) return;
+      final back = cameras.firstWhere(
+        (c) => c.lensDirection == CameraLensDirection.back,
+        orElse: () => cameras.first,
+      );
+      _visionCamera = CameraController(
+        back,
+        ResolutionPreset.medium,
+        enableAudio: false,
+      );
+      await _visionCamera!.initialize();
+      if (_flashOn) {
+        await _visionCamera!.setFlashMode(FlashMode.torch);
+      }
+      if (mounted) setState(() => _isVisionCameraReady = true);
+    } catch (e) {
+      debugPrint('Vision camera init error: $e');
+      if (mounted) setState(() => _state = ScanViewState.permissionDenied);
+    }
+  }
+
+  Future<void> _disposeVisionCamera() async {
+    _isVisionCameraReady = false;
+    try {
+      await _visionCamera?.dispose();
+    } catch (_) {}
+    _visionCamera = null;
+  }
+
+  // ── Vision capture & match ────────────────────────────────────────────────
+
+  Future<void> _captureAndMatch() async {
+    if (_visionCamera == null || !_visionCamera!.value.isInitialized) return;
+
+    final navigator = Navigator.of(context);
+
+    try {
+      final xFile = await _visionCamera!.takePicture();
+      final bytes = await xFile.readAsBytes();
+
+      setState(() {
+        _capturedImageBytes = bytes;
+        _state = ScanViewState.visionAnalyzing;
+      });
+
+      final imageBase64 = await VisionService.compressAndEncode(bytes);
+
+      // 1) Direct artifact identification via Gemini Vision against the catalog.
+      final identification = await _visionService.identifyArtifact(
+        imageBase64: imageBase64,
+      );
+      if (!mounted) return;
+
+      if (identification != null &&
+          identification.hasMatch &&
+          identification.confidence >= _identifyArtifactConfidenceThreshold) {
+        final repo = _artifactRepository;
+        if (repo != null) {
+          final artifact = await repo.getArtifactById(identification.artifactId);
+          if (!mounted) return;
+
+          if (artifact != null) {
+            setState(() => _state = ScanViewState.visionFound);
+
+            try {
+              await _scanHistoryService?.addScan(artifact);
+            } catch (_) {}
+
+            await navigator.push(
+              MaterialPageRoute(
+                builder: (_) => ArtifactDetailsScreen(artifact: artifact),
+              ),
+            );
+            if (mounted) _resetVision();
+            return;
+          }
+        }
+      }
+
+      // 2) Fallback — describe the image and run semantic search on the description.
+      final fallbackDescription = identification?.description.isNotEmpty == true
+          ? identification!.description
+          : await _visionService.analyzeImage(
+              imageBase64: imageBase64,
+              prompt: _visionService.buildVisionPrompt(isFollowUp: false),
+            );
+      if (!mounted) return;
+
+      if (fallbackDescription.startsWith('Sorry') ||
+          fallbackDescription.startsWith('Cloud Function URL')) {
+        setState(() {
+          _visionDescription = fallbackDescription;
+          _state = ScanViewState.visionNoMatch;
+        });
+        return;
+      }
+
+      _visionDescription = fallbackDescription;
+
+      final search = _searchService;
+      if (search != null) {
+        final results = await search.search(fallbackDescription);
+        if (!mounted) return;
+
+        if (results.isNotEmpty &&
+            results.first.similarity >= _visionMatchThreshold) {
+          final repo = _artifactRepository;
+          if (repo != null) {
+            final artifact = await repo.getArtifactById(results.first.id);
+            if (!mounted) return;
+
+            if (artifact != null) {
+              setState(() => _state = ScanViewState.visionFound);
+
+              try {
+                await _scanHistoryService?.addScan(artifact);
+              } catch (_) {}
+
+              await navigator.push(
+                MaterialPageRoute(
+                  builder: (_) => ArtifactDetailsScreen(artifact: artifact),
+                ),
+              );
+              if (mounted) _resetVision();
+              return;
+            }
+          }
+        }
+      }
+
+      if (mounted) {
+        setState(() => _state = ScanViewState.visionNoMatch);
+      }
+    } catch (e) {
+      debugPrint('Vision capture error: $e');
+      if (!mounted) return;
+      setState(() {
+        _visionDescription = 'Failed to analyze image. Please try again.';
+        _state = ScanViewState.visionNoMatch;
+      });
+    }
+  }
+
+  void _resetVision() {
+    setState(() {
+      _capturedImageBytes = null;
+      _visionDescription = null;
+      _state = ScanViewState.visionCapturing;
+    });
+  }
+
+  // ── QR handling (unchanged logic) ──────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
     final h = MediaQuery.of(context).size.height;
     final permissionState = _state == ScanViewState.permissionDenied;
+    final isVision = _mode == ScanMode.vision;
 
     return Scaffold(
       backgroundColor: Colors.black,
       body: Stack(
         children: [
-          if (!permissionState)
-            Positioned.fill(
-              child: MobileScanner(
-                controller: _cameraController,
-                onDetect: _handleBarcodeScan,
-                errorBuilder: (context, error, child) {
-                  return Center(
-                    child: Text(
-                      'Camera Error: ${error.errorCode}',
-                      style: const TextStyle(color: Colors.white),
-                    ),
-                  );
-                },
+          // Camera preview
+          if (!permissionState) ...[
+            if (!isVision)
+              Positioned.fill(
+                child: MobileScanner(
+                  controller: _cameraController,
+                  onDetect: _handleBarcodeScan,
+                  errorBuilder: (context, error, child) {
+                    return Center(
+                      child: Text(
+                        'Camera Error: ${error.errorCode}',
+                        style: const TextStyle(color: Colors.white),
+                      ),
+                    );
+                  },
+                ),
+              )
+            else if (_isVisionCameraReady && _visionCamera != null)
+              Positioned.fill(
+                child: _capturedImageBytes != null
+                    ? Image.memory(
+                        _capturedImageBytes!,
+                        fit: BoxFit.cover,
+                        color: _state == ScanViewState.visionAnalyzing
+                            ? Colors.black.withValues(alpha: 0.40)
+                            : null,
+                        colorBlendMode: _state == ScanViewState.visionAnalyzing
+                            ? BlendMode.darken
+                            : null,
+                      )
+                    : CameraPreview(_visionCamera!),
+              )
+            else if (isVision)
+              const Center(
+                child: CircularProgressIndicator(color: Colors.white),
               ),
-            ),
-          if (!permissionState)
+          ],
+
+          if (!permissionState && !isVision)
             Positioned.fill(
               child: Container(color: Colors.black.withValues(alpha: 0.20)),
             ),
+
+          // Analyzing overlay
+          if (_state == ScanViewState.visionAnalyzing)
+            Center(
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 32, vertical: 24),
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.70),
+                  borderRadius: BorderRadius.circular(AppRadius.lg),
+                ),
+                child: const Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    CircularProgressIndicator(color: AppColors.primary),
+                    SizedBox(height: 16),
+                    _ShimmerText('Analyzing...'),
+                  ],
+                ),
+              ),
+            ),
+
           SafeArea(
             child: Column(
               children: [
@@ -102,15 +379,22 @@ class _ScanScreenState extends State<ScanScreen>
                   flashOn: _flashOn,
                   onBack: () => Navigator.pop(context),
                   onFlash: _toggleFlash,
+                  mode: _mode,
+                  onModeChanged: _switchMode,
+                  isSwitching: _isSwitchingMode,
                 ),
                 Expanded(
                   child: Stack(
                     alignment: Alignment.center,
                     children: [
-                      Opacity(
-                        opacity: permissionState ? 0.30 : 1,
-                        child: _ScanFrame(controller: _scanController),
-                      ),
+                      // QR scan frame (only in QR mode)
+                      if (!isVision)
+                        Opacity(
+                          opacity: permissionState ? 0.30 : 1,
+                          child: _ScanFrame(controller: _scanController),
+                        ),
+
+                      // Permission prompt
                       if (_state == ScanViewState.permissionDenied)
                         Positioned(
                           left: AppSpacing.lg,
@@ -121,12 +405,20 @@ class _ScanScreenState extends State<ScanScreen>
                                 'Allow camera access so the app can recognize artifacts and AR triggers.',
                             actionLabel: 'Enable Camera',
                             onAction: () async {
-                              await _cameraController.start();
+                              if (_mode == ScanMode.qr) {
+                                await _cameraController.start();
+                              } else {
+                                await _initVisionCamera();
+                              }
                               if (!mounted) return;
-                              setState(() => _state = ScanViewState.searching);
+                              setState(() => _state = _mode == ScanMode.qr
+                                  ? ScanViewState.searching
+                                  : ScanViewState.visionCapturing);
                             },
                           ),
                         ),
+
+                      // QR found card
                       if (_state == ScanViewState.found &&
                           _scannedArtifact != null)
                         Positioned(
@@ -146,6 +438,8 @@ class _ScanScreenState extends State<ScanScreen>
                             },
                           ),
                         ),
+
+                      // QR no match card
                       if (_state == ScanViewState.noMatch)
                         Positioned(
                           left: AppSpacing.lg,
@@ -164,6 +458,25 @@ class _ScanScreenState extends State<ScanScreen>
                             },
                           ),
                         ),
+
+                      // Vision no-match card
+                      if (_state == ScanViewState.visionNoMatch &&
+                          _visionDescription != null)
+                        Positioned(
+                          left: AppSpacing.lg,
+                          right: AppSpacing.lg,
+                          bottom: h * 0.18,
+                          child: _VisionNoMatchCard(
+                            description: _visionDescription!,
+                            onRetry: _resetVision,
+                            onAskGuide: () => TicketGate.navigate(
+                              context,
+                              () => const AiGuideScreen(),
+                            ),
+                          ),
+                        ),
+
+                      // Status pill
                       Positioned(
                         bottom: h * 0.15,
                         child: AnimatedSwitcher(
@@ -174,20 +487,43 @@ class _ScanScreenState extends State<ScanScreen>
                     ],
                   ),
                 ),
-                _BottomBar(
-                  onHistory: () {
-                    Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (_) => const ScanHistoryScreen(),
-                      ),
-                    );
-                  },
-                  onHelp: () {
-                    Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => const ScanHelpScreen()),
-                    );
-                  },
-                ),
+                // Bottom area: history/help for QR, capture button for vision
+                if (isVision)
+                  _CaptureBar(
+                    onCapture: (_state == ScanViewState.visionCapturing &&
+                            _isVisionCameraReady)
+                        ? _captureAndMatch
+                        : null,
+                    onHistory: () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => const ScanHistoryScreen(),
+                        ),
+                      );
+                    },
+                    onHelp: () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute(
+                            builder: (_) => const ScanHelpScreen()),
+                      );
+                    },
+                  )
+                else
+                  _BottomBar(
+                    onHistory: () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => const ScanHistoryScreen(),
+                        ),
+                      );
+                    },
+                    onHelp: () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute(
+                            builder: (_) => const ScanHelpScreen()),
+                      );
+                    },
+                  ),
               ],
             ),
           ),
@@ -222,12 +558,36 @@ class _ScanScreenState extends State<ScanScreen>
         );
       case ScanViewState.noMatch:
         return _RetryPill(label: 'NO MATCH', onRetry: _restartScanning);
+      case ScanViewState.visionCapturing:
+        return const _StatusPill(
+          key: ValueKey('visionReady'),
+          icon: Icons.camera_enhance_outlined,
+          label: 'READY',
+          color: AppColors.primary,
+        );
+      case ScanViewState.visionAnalyzing:
+        return const _SearchingPill(key: ValueKey('visionAnalyzing'));
+      case ScanViewState.visionFound:
+        return const _StatusPill(
+          icon: Icons.check_circle,
+          label: 'ARTIFACT IDENTIFIED',
+          color: Color(0xFF2E7D32),
+        );
+      case ScanViewState.visionNoMatch:
+        return _RetryPill(label: 'NO MATCH', onRetry: _resetVision);
     }
   }
 
-  void _toggleFlash() {
-    setState(() => _flashOn = !_flashOn);
-    _cameraController.toggleTorch();
+  void _toggleFlash() async {
+    _flashOn = !_flashOn;
+    if (_mode == ScanMode.qr) {
+      _cameraController.toggleTorch();
+    } else if (_visionCamera != null) {
+      await _visionCamera!.setFlashMode(
+        _flashOn ? FlashMode.torch : FlashMode.off,
+      );
+    }
+    setState(() {});
   }
 
   void _restartScanning() {
@@ -289,15 +649,11 @@ class _ScanScreenState extends State<ScanScreen>
 
         try {
           await _scanHistoryService?.addScan(artifact);
-        } catch (_) {
-          // Keep scanning responsive even if history persistence fails.
-        }
+        } catch (_) {}
 
         try {
           await _cameraController.stop();
-        } catch (_) {
-          // Camera stop failures should not block artifact navigation.
-        }
+        } catch (_) {}
 
         if (!_hasNavigatedToDetails && mounted) {
           _hasNavigatedToDetails = true;
@@ -308,9 +664,7 @@ class _ScanScreenState extends State<ScanScreen>
                 builder: (_) => ArtifactViewerScreen(artifactId: qrCode),
               ),
             );
-          } catch (_) {
-            // Navigation failure should gracefully resume scanner.
-          }
+          } catch (_) {}
           if (mounted) {
             _restartScanning();
           }
@@ -379,19 +733,31 @@ class _ScanScreenState extends State<ScanScreen>
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// Private widgets
+// ═══════════════════════════════════════════════════════════════════════════════
+
 class _TopArea extends StatelessWidget {
   const _TopArea({
     required this.flashOn,
     required this.onBack,
     required this.onFlash,
+    required this.mode,
+    required this.onModeChanged,
+    required this.isSwitching,
   });
 
   final bool flashOn;
   final VoidCallback onBack;
   final VoidCallback onFlash;
+  final ScanMode mode;
+  final ValueChanged<ScanMode> onModeChanged;
+  final bool isSwitching;
 
   @override
   Widget build(BuildContext context) {
+    final isQr = mode == ScanMode.qr;
+
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.fromLTRB(
@@ -419,29 +785,117 @@ class _TopArea extends StatelessWidget {
               color: const Color(0xD9FDFBF7),
               borderRadius: BorderRadius.circular(18),
             ),
-            child: const Column(
+            child: Column(
               children: [
                 Text(
-                  'Point camera at QR code',
-                  style: TextStyle(
+                  isQr ? 'Point camera at QR code' : 'Point at any object',
+                  style: const TextStyle(
                     fontSize: 20,
                     fontWeight: FontWeight.w900,
                     color: AppColors.textMain,
                   ),
                 ),
-                SizedBox(height: 6),
+                const SizedBox(height: 6),
                 Text(
-                  'Align the code within the frame',
-                  style: TextStyle(
+                  isQr
+                      ? 'Align the code within the frame'
+                      : 'Tap capture to identify',
+                  style: const TextStyle(
                     fontSize: 13,
                     fontWeight: FontWeight.w700,
                     color: AppColors.textMuted,
                   ),
                 ),
+                const SizedBox(height: 14),
+                _ModeToggle(
+                  mode: mode,
+                  onChanged: isSwitching ? null : onModeChanged,
+                ),
               ],
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _ModeToggle extends StatelessWidget {
+  const _ModeToggle({required this.mode, required this.onChanged});
+
+  final ScanMode mode;
+  final ValueChanged<ScanMode>? onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 38,
+      padding: const EdgeInsets.all(3),
+      decoration: BoxDecoration(
+        color: AppColors.surfaceBorder,
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _ToggleChip(
+            label: 'QR Code',
+            icon: Icons.qr_code_scanner,
+            active: mode == ScanMode.qr,
+            onTap: onChanged != null ? () => onChanged!(ScanMode.qr) : null,
+          ),
+          _ToggleChip(
+            label: 'Object',
+            icon: Icons.camera_enhance_outlined,
+            active: mode == ScanMode.vision,
+            onTap:
+                onChanged != null ? () => onChanged!(ScanMode.vision) : null,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ToggleChip extends StatelessWidget {
+  const _ToggleChip({
+    required this.label,
+    required this.icon,
+    required this.active,
+    required this.onTap,
+  });
+
+  final String label;
+  final IconData icon;
+  final bool active;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+        decoration: BoxDecoration(
+          color: active ? AppColors.primary : Colors.transparent,
+          borderRadius: BorderRadius.circular(999),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 14, color: active ? Colors.white : AppColors.textMuted),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w800,
+                color: active ? Colors.white : AppColors.textMuted,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -470,6 +924,69 @@ class _BottomBar extends StatelessWidget {
             onTap: onHistory,
           ),
           _ActionButton(label: 'Help', icon: Icons.help_outline, onTap: onHelp),
+        ],
+      ),
+    );
+  }
+}
+
+class _CaptureBar extends StatelessWidget {
+  const _CaptureBar({
+    required this.onCapture,
+    required this.onHistory,
+    required this.onHelp,
+  });
+
+  final VoidCallback? onCapture;
+  final VoidCallback onHistory;
+  final VoidCallback onHelp;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
+        AppSpacing.lg,
+        12,
+        AppSpacing.lg,
+        AppSpacing.lg,
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          _ActionButton(
+            label: 'History',
+            icon: Icons.collections_outlined,
+            onTap: onHistory,
+          ),
+          GestureDetector(
+            onTap: onCapture,
+            child: Opacity(
+              opacity: onCapture != null ? 1.0 : 0.4,
+              child: Container(
+                width: 68,
+                height: 68,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.white, width: 4),
+                ),
+                child: Center(
+                  child: Container(
+                    width: 54,
+                    height: 54,
+                    decoration: const BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: Colors.white,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+          _ActionButton(
+            label: 'Help',
+            icon: Icons.help_outline,
+            onTap: onHelp,
+          ),
         ],
       ),
     );
@@ -634,6 +1151,7 @@ class _SearchingPillState extends State<_SearchingPill>
 
 class _StatusPill extends StatelessWidget {
   const _StatusPill({
+    super.key,
     required this.icon,
     required this.label,
     required this.color,
@@ -797,6 +1315,88 @@ class _NoMatchCard extends StatelessWidget {
   }
 }
 
+class _VisionNoMatchCard extends StatelessWidget {
+  const _VisionNoMatchCard({
+    required this.description,
+    required this.onRetry,
+    required this.onAskGuide,
+  });
+
+  final String description;
+  final VoidCallback onRetry;
+  final VoidCallback onAskGuide;
+
+  @override
+  Widget build(BuildContext context) {
+    // Truncate to ~3 sentences for display
+    final sentences = description.split(RegExp(r'(?<=[.!?])\s+'));
+    final preview =
+        sentences.take(3).join(' ').trim();
+
+    return Container(
+      padding: const EdgeInsets.all(AppSpacing.md),
+      decoration: BoxDecoration(
+        color: const Color(0xD9FDFBF7),
+        borderRadius: BorderRadius.circular(AppRadius.lg),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.auto_awesome, size: 16, color: AppColors.primary),
+              SizedBox(width: 8),
+              Text(
+                'What I See',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w900,
+                  color: AppColors.textMain,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Text(
+            preview,
+            style: const TextStyle(
+              fontSize: 13,
+              height: 1.4,
+              fontWeight: FontWeight.w600,
+              color: AppColors.textMuted,
+            ),
+            maxLines: 5,
+            overflow: TextOverflow.ellipsis,
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: onRetry,
+                  child: const Text('Try Again'),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: onAskGuide,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.primary,
+                    foregroundColor: Colors.white,
+                  ),
+                  icon: const Icon(Icons.smart_toy_outlined, size: 16),
+                  label: const Text('Ask AI Guide'),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _OverlayCard extends StatelessWidget {
   const _OverlayCard({
     required this.title,
@@ -861,6 +1461,67 @@ class _OverlayCard extends StatelessWidget {
             child: Text(actionLabel),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _ShimmerText extends StatefulWidget {
+  const _ShimmerText(this.text);
+  final String text;
+
+  @override
+  State<_ShimmerText> createState() => _ShimmerTextState();
+}
+
+class _ShimmerTextState extends State<_ShimmerText>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1500),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _ctrl,
+      builder: (context, child) {
+        return ShaderMask(
+          shaderCallback: (bounds) {
+            return LinearGradient(
+              begin: Alignment(-1.0 + 3.0 * _ctrl.value, 0),
+              end: Alignment(-1.0 + 3.0 * _ctrl.value + 1.0, 0),
+              colors: const [
+                AppColors.textMuted,
+                AppColors.primary,
+                AppColors.textMuted,
+              ],
+              stops: const [0.0, 0.5, 1.0],
+            ).createShader(bounds);
+          },
+          blendMode: BlendMode.srcIn,
+          child: child!,
+        );
+      },
+      child: Text(
+        widget.text,
+        style: const TextStyle(
+          fontSize: 14,
+          fontStyle: FontStyle.italic,
+          fontWeight: FontWeight.w600,
+        ),
       ),
     );
   }

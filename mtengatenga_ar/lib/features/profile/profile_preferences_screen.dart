@@ -1,78 +1,122 @@
 import 'package:flutter/material.dart';
-import '../../core/ui/states/state_view.dart';
+import 'package:get_it/get_it.dart';
+import '../../core/services/auth_service.dart';
+import '../../core/services/auth_state.dart';
+import '../../services/translation_service.dart';
 import '../../theme/app_tokens.dart';
 import '../events/notification_center_screen.dart';
+import '../scan/scan_history_screen.dart';
 import '../tickets/ticket_wallet_screen.dart';
 
-class ProfilePreferencesScreen extends StatefulWidget {
+class ProfilePreferencesScreen extends StatelessWidget {
   const ProfilePreferencesScreen({super.key});
 
   @override
-  State<ProfilePreferencesScreen> createState() => _ProfilePreferencesScreenState();
-}
-
-class _ProfilePreferencesScreenState extends State<ProfilePreferencesScreen> {
-  bool _english = true;
-  bool _largeText = false;
-  bool _highContrast = false;
-  bool _eventAlerts = true;
-  bool _tourReminders = true;
-
-  @override
   Widget build(BuildContext context) {
+    final languageState = GetIt.instance<LanguageState>();
+    final authState = GetIt.instance<AuthStateNotifier>();
+
     return Scaffold(
       backgroundColor: AppColors.backgroundLight,
       appBar: AppBar(title: const Text('Profile & Preferences')),
       body: ListView(
         padding: const EdgeInsets.all(AppSpacing.md),
         children: [
-          const OfflineBanner(),
-          const SizedBox(height: 12),
-          _Section(
-            title: 'Language',
-            child: SegmentedButton<bool>(
-              segments: const [
-                ButtonSegment(value: true, label: Text('English')),
-                ButtonSegment(value: false, label: Text('Chichewa')),
-              ],
-              selected: {_english},
-              onSelectionChanged: (value) => setState(() => _english = value.first),
+          // Account
+          ListenableBuilder(
+            listenable: authState,
+            builder: (context, _) {
+              final profile = authState.profile;
+              final user = authState.user;
+              return _Section(
+                title: 'Account',
+                child: Row(
+                  children: [
+                    CircleAvatar(
+                      radius: 24,
+                      backgroundColor: AppColors.primary.withAlpha(25),
+                      child: Text(
+                        (profile?.fullName.isNotEmpty == true
+                                ? profile!.fullName[0]
+                                : user?.email?[0] ?? '?')
+                            .toUpperCase(),
+                        style: const TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.w800,
+                          color: AppColors.primary,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            profile?.fullName ?? '',
+                            style: const TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w800,
+                              color: AppColors.textMain,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            profile?.email ?? user?.email ?? '',
+                            style: const TextStyle(
+                              fontSize: 13,
+                              color: AppColors.textMuted,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
+
+          // Language
+          ValueListenableBuilder<String>(
+            valueListenable: languageState,
+            builder: (context, lang, _) => _Section(
+              title: 'Language',
+              child: SegmentedButton<String>(
+                segments: const [
+                  ButtonSegment(
+                    value: 'en',
+                    label: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text('\u{1F1EC}\u{1F1E7}',
+                            style: TextStyle(fontSize: 18)),
+                        SizedBox(width: 6),
+                        Text('English'),
+                      ],
+                    ),
+                  ),
+                  ButtonSegment(
+                    value: 'ny',
+                    label: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text('\u{1F1F2}\u{1F1FC}',
+                            style: TextStyle(fontSize: 18)),
+                        SizedBox(width: 6),
+                        Text('Chichewa'),
+                      ],
+                    ),
+                  ),
+                ],
+                selected: {lang},
+                onSelectionChanged: (value) =>
+                    languageState.setLanguage(value.first),
+              ),
             ),
           ),
-          _Section(
-            title: 'Accessibility',
-            child: Column(
-              children: [
-                SwitchListTile(
-                  value: _largeText,
-                  onChanged: (v) => setState(() => _largeText = v),
-                  title: const Text('Large Text'),
-                ),
-                SwitchListTile(
-                  value: _highContrast,
-                  onChanged: (v) => setState(() => _highContrast = v),
-                  title: const Text('High Contrast'),
-                ),
-              ],
-            ),
-          ),
-          _Section(
-            title: 'Notifications',
-            child: Column(
-              children: [
-                SwitchListTile(
-                  value: _eventAlerts,
-                  onChanged: (v) => setState(() => _eventAlerts = v),
-                  title: const Text('Event Alerts'),
-                ),
-                SwitchListTile(
-                  value: _tourReminders,
-                  onChanged: (v) => setState(() => _tourReminders = v),
-                  title: const Text('Tour Reminders'),
-                ),
-              ],
-            ),
-          ),
+
+          // Quick Access
           _Section(
             title: 'Quick Access',
             child: Column(
@@ -83,7 +127,19 @@ class _ProfilePreferencesScreenState extends State<ProfilePreferencesScreen> {
                   trailing: const Icon(Icons.chevron_right),
                   onTap: () {
                     Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => const TicketWalletScreen()),
+                      MaterialPageRoute(
+                          builder: (_) => const TicketWalletScreen()),
+                    );
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.history_outlined),
+                  title: const Text('Scan History'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () {
+                    Navigator.of(context).push(
+                      MaterialPageRoute(
+                          builder: (_) => const ScanHistoryScreen()),
                     );
                   },
                 ),
@@ -93,11 +149,44 @@ class _ProfilePreferencesScreenState extends State<ProfilePreferencesScreen> {
                   trailing: const Icon(Icons.chevron_right),
                   onTap: () {
                     Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => const NotificationCenterScreen()),
+                      MaterialPageRoute(
+                          builder: (_) => const NotificationCenterScreen()),
                     );
                   },
                 ),
               ],
+            ),
+          ),
+
+          // Log Out
+          _Section(
+            title: '',
+            child: ListTile(
+              leading: const Icon(Icons.logout, color: Colors.red),
+              title: const Text(
+                'Log Out',
+                style: TextStyle(
+                  color: Colors.red,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              onTap: () async {
+                await GetIt.instance<AuthService>().signOut();
+              },
+            ),
+          ),
+
+          // App version
+          const Padding(
+            padding: EdgeInsets.only(top: 8, bottom: 24),
+            child: Text(
+              'Mtengatenga AR Museum v1.0.0',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                color: AppColors.textMuted,
+              ),
             ),
           ),
         ],
@@ -125,15 +214,17 @@ class _Section extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            title,
-            style: const TextStyle(
-              fontSize: 14,
-              fontWeight: FontWeight.w900,
-              color: AppColors.textMain,
+          if (title.isNotEmpty) ...[
+            Text(
+              title,
+              style: const TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w900,
+                color: AppColors.textMain,
+              ),
             ),
-          ),
-          const SizedBox(height: 8),
+            const SizedBox(height: 8),
+          ],
           child,
         ],
       ),

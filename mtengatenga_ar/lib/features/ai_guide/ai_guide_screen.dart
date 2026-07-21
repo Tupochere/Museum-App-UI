@@ -1,6 +1,26 @@
+import 'dart:async';
+import 'dart:collection';
+import 'dart:io';
 import 'dart:math';
+import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_tts/flutter_tts.dart';
+import 'package:just_audio/just_audio.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:speech_to_text/speech_recognition_error.dart';
+import 'package:speech_to_text/speech_recognition_result.dart';
+import 'package:speech_to_text/speech_to_text.dart' as stt;
+import '../../core/domain/entities/artifact.model.dart';
+import 'package:get_it/get_it.dart';
+import '../../services/gemini_service.dart';
+import '../../services/translation_service.dart';
+import '../../services/elevenlabs_tts_service.dart';
+import '../../services/gemini_tts_service.dart';
+import '../../services/google_cloud_tts_service.dart';
+import '../../services/openai_tts_service.dart';
+import '../../services/supabase_service.dart';
 import '../../theme/app_tokens.dart';
 import '../map/indoor_navigation_screen.dart';
 
@@ -9,46 +29,143 @@ import '../map/indoor_navigation_screen.dart';
 // ─────────────────────────────────────────────────────────────────────────────
 enum _AiMode { text, voice }
 
-enum _VoiceState { idle, listening, thinking, speaking }
+enum _VoiceState { idle, listening, thinking, speaking, waiting }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Mock data
+// Task 1 — Fake Amplitude Engine
 // ─────────────────────────────────────────────────────────────────────────────
-class _Mock {
-  static const suggestions = [
-    'Tell me about the Gule Wamkulu mask',
-    'What ceremonies used this artifact?',
-    'Guide me to the Hall of Ancestors',
-    'When was this piece created?',
-    'Explain Nyau traditions to me',
-  ];
-
-  static const responses = [
-    'The Gule Wamkulu mask before you represents the spirit Kasiya Maliro. '
-        'It was worn exclusively by initiated Nyau society members during funeral ceremonies '
-        'to guide the departed into the ancestral realm. This piece dates to the late 19th century.',
-    'This artifact was central to Chewa initiation rites. The Nyau society — '
-        'a secret brotherhood — used these masks to bridge the world of the living and the '
-        'ancestors. Only fully initiated men could wear them.',
-    'The Hall of Ancestors is on Level 2, East Wing — about a 3-minute walk from here. '
-        'It houses 43 artifacts spanning 300 years of Chewa heritage. Shall I navigate you there?',
-    'This piece was crafted between 1880 and 1910, during a period when Chewa craftsmen '
-        'were refining the symbolic vocabulary of Nyau masks. The red pigment comes from '
-        'ground ochre sourced from the Dedza highlands.',
-    'Nyau is a secret society of the Chewa, Mang\'anja, and Tumbuka peoples. Their '
-        'ceremonies involve elaborate masked dances representing ancestral spirits, wild animals, '
-        'and forces of nature. UNESCO inscribed Gule Wamkulu as Intangible Cultural Heritage in 2005.',
-  ];
-
-  static const voiceResponse =
-      'The Gule Wamkulu mask you\'re standing in front of represents the '
-      'spirit Kasiya Maliro. It was used in funeral ceremonies to guide the '
-      'departed to the ancestral realm, and only initiated Nyau members could '
-      'wear it. Would you like to know more about the Nyau society?';
+class _AmplitudeEngine {
+  static double getValue(double t, _VoiceState state) {
+    switch (state) {
+      case _VoiceState.idle:
+        return 0.0;
+      case _VoiceState.thinking:
+        return 0.08 + 0.06 * sin(t * 1.2);
+      case _VoiceState.listening:
+        return (0.3 +
+                0.4 * sin(t * 3.7) +
+                0.2 * sin(t * 7.1) +
+                0.1 * sin(t * 13.3))
+            .clamp(0.0, 1.0);
+      case _VoiceState.speaking:
+        final beat = sin(t * pi / 0.4);
+        final base = 0.45 + 0.3 * beat;
+        final texture = 0.15 * sin(t * 9.2);
+        final breathe = 0.1 * sin(t * 0.7);
+        return (base + texture + breathe).clamp(0.0, 1.0);
+      case _VoiceState.waiting:
+        return (0.05 + 0.03 * sin(t * 1.4)).clamp(0.0, 1.0);
+    }
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Simple message model
+// Pulse ring data class (Task 11b)
+// ─────────────────────────────────────────────────────────────────────────────
+class _PulseRing {
+  final double birthTime;
+  _PulseRing(this.birthTime);
+}
+
+class _ParticleSeed {
+  final double theta;
+  final double phi;
+  final double brightBias;
+  final double twinklePhase;
+  final double hoverPhase;
+  final double hoverStrength;
+  final double hoverSpeed;
+  final double hoverBand;
+
+  const _ParticleSeed({
+    required this.theta,
+    required this.phi,
+    required this.brightBias,
+    required this.twinklePhase,
+    required this.hoverPhase,
+    required this.hoverStrength,
+    required this.hoverSpeed,
+    required this.hoverBand,
+  });
+}
+
+class _VoiceBackdropSpec {
+  final Color innerColor;
+  final Color midColor;
+  final Color outerColor = Colors.black;
+  final double radius;
+  final Alignment center;
+
+  const _VoiceBackdropSpec({
+    required this.innerColor,
+    required this.midColor,
+    required this.radius,
+    this.center = Alignment.bottomCenter,
+  });
+}
+
+_VoiceBackdropSpec _voiceBackdropFor(_VoiceState state) {
+  switch (state) {
+    case _VoiceState.idle:
+      return const _VoiceBackdropSpec(
+        innerColor: Color(0xFF281206),
+        midColor: Color(0xFF110702),
+        radius: 0.98,
+        center: Alignment(0.0, 1.04),
+      );
+    case _VoiceState.listening:
+      return const _VoiceBackdropSpec(
+        innerColor: Color(0xFF4D260C),
+        midColor: Color(0xFF201004),
+        radius: 1.04,
+        center: Alignment(0.0, 1.02),
+      );
+    case _VoiceState.thinking:
+      return const _VoiceBackdropSpec(
+        innerColor: Color(0xFF063643),
+        midColor: Color(0xFF02161E),
+        radius: 1.12,
+        center: Alignment(0.0, 0.94),
+      );
+    case _VoiceState.speaking:
+      return const _VoiceBackdropSpec(
+        innerColor: Color(0xFF0A4352),
+        midColor: Color(0xFF03202A),
+        radius: 1.16,
+        center: Alignment(0.0, 0.90),
+      );
+    case _VoiceState.waiting:
+      return const _VoiceBackdropSpec(
+        innerColor: Color(0xFF381A09),
+        midColor: Color(0xFF160903),
+        radius: 1.01,
+        center: Alignment(0.0, 1.00),
+      );
+  }
+}
+
+List<_ParticleSeed> _buildParticleSeeds(int count, {required int seed}) {
+  final rng = Random(seed);
+  return List<_ParticleSeed>.generate(count, (_) {
+    final theta = rng.nextDouble() * 2 * pi;
+    final rawPhi = acos(2 * rng.nextDouble() - 1);
+    final equatorPull = (pi / 2 - rawPhi) * 0.12;
+    final phi = rawPhi + equatorPull;
+    return _ParticleSeed(
+      theta: theta,
+      phi: phi,
+      brightBias: rng.nextDouble(),
+      twinklePhase: rng.nextDouble() * 2 * pi,
+      hoverPhase: rng.nextDouble() * 2 * pi,
+      hoverStrength: 1.00 + rng.nextDouble() * 0.90,
+      hoverSpeed: 0.45 + rng.nextDouble() * 0.85,
+      hoverBand: rng.nextDouble() * 2 * pi,
+    );
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Message model
 // ─────────────────────────────────────────────────────────────────────────────
 class _Msg {
   final String text;
@@ -56,11 +173,33 @@ class _Msg {
   const _Msg({required this.text, required this.isUser});
 }
 
+class _SpeechChunk {
+  final String text;
+  final Duration duration;
+  final String audioPath;
+
+  const _SpeechChunk({
+    required this.text,
+    required this.duration,
+    required this.audioPath,
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Top-level pseudo-noise helper (Task 2b)
+// ─────────────────────────────────────────────────────────────────────────────
+double _sineNoise(int seed, double t) {
+  final s = seed * 127 + 1;
+  return sin(s * 0.317 + t * 1.7) * cos(s * 0.573 + t * 0.9);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Main screen
 // ─────────────────────────────────────────────────────────────────────────────
 class AiGuideScreen extends StatefulWidget {
-  const AiGuideScreen({super.key});
+  const AiGuideScreen({super.key, this.artifact});
+
+  final Artifact? artifact;
 
   @override
   State<AiGuideScreen> createState() => _AiGuideScreenState();
@@ -68,157 +207,1648 @@ class AiGuideScreen extends StatefulWidget {
 
 class _AiGuideScreenState extends State<AiGuideScreen>
     with TickerProviderStateMixin {
-  // ── App state ─────────────────────────────────────────────────────────────
+  // ── Services ──────────────────────────────────────────────────────────────
+  final _translationService = GetIt.instance<TranslationService>();
+  final _geminiService = GeminiService();
+  final _geminiTtsService = GeminiTtsService();
+  final _googleCloudTtsService = GoogleCloudTtsService();
+  final _openAiTtsService = OpenAiTtsService();
+  final _elevenLabsTtsService = ElevenLabsTtsService();
+  final _supabaseService = SupabaseService();
+  late final FlutterTts _tts;
+  late final AudioPlayer _speechPlayer;
+  late final stt.SpeechToText _speechToText;
+  StreamSubscription<PlayerState>? _speechPlayerSub;
+  StreamSubscription<String>? _voiceResponseStreamSub;
+  final Set<String> _speechTempPaths = <String>{};
+  final Queue<_SpeechChunk> _speechQueue = Queue<_SpeechChunk>();
+  Future<void> _speechSynthesisChain = Future<void>.value();
+  _SpeechChunk? _activeSpeechChunk;
+
+  // ── Conversation ──────────────────────────────────────────────────────────
+  final _conversationHistory = <Map<String, String>>[];
+  bool _isTyping = false;
+
+  // ── Offline ────────────────────────────────────────────────────────────────
+  bool _isOffline = false;
+  StreamSubscription<ConnectivityResult>? _connectivitySub;
+
+  // ── Tour ──────────────────────────────────────────────────────────────────
+  List<Map<String, dynamic>> _tourStops = [];
+  int _currentTourStopIndex = 0;
+  String _currentTourName = '';
+
+  // ── Mode ──────────────────────────────────────────────────────────────────
   _AiMode _mode = _AiMode.text;
   bool _tourMode = false;
 
   // ── Text mode ─────────────────────────────────────────────────────────────
   final _messages = <_Msg>[];
   final _scrollCtrl = ScrollController();
-  int _responseIdx = 0;
 
-  // ── Voice mode ────────────────────────────────────────────────────────────
+  // ── Voice mode core ────────────────────────────────────────────────────────
   _VoiceState _voiceState = _VoiceState.idle;
-  String _voiceText = '';
+  bool _isExiting = false;
+  int _voiceTurnId = 0;
 
-  // ── Animations ────────────────────────────────────────────────────────────
+  // ── Word streaming (Task 4) ────────────────────────────────────────────────
+  List<String> _words = [];
+  int _revealedWordCount = 0;
+  List<Duration> _wordRevealDelays = const [];
+  Timer? _wordTimer;
+  VoidCallback? _onWordStreamComplete;
+  final ScrollController _responseScrollCtrl = ScrollController();
+
+  // ── Amplitude / beat (Tasks 1, 9e, 12a) ───────────────────────────────────
+  double _cachedAmplitude = 0.0;
+  int _ampFrameCount = 0;
+  double _beatStrength = 0.0;
+  double _beatDecayStart = 0.0;
+  double _lastSpeakingAmp = 0.0;
+  bool _ttsCompletionArmed = false;
+  bool _deviceTtsActive = false;
+  bool _speechStreamDone = false;
+  bool _geminiTtsFailed = false;
+  bool _hasStartedSpeakingThisTurn = false;
+  String _unsynthesizedText = '';
+  bool _deviceTtsFallbackPending = false;
+  double _liveMicLevel = 0.0;
+
+  // ── Pulse rings (Task 11b) ─────────────────────────────────────────────────
+  final List<_PulseRing> _pulseRings = [];
+  double _lastAmplitude = 0.0;
+
+  // ── Thinking dots (Task 17) ────────────────────────────────────────────────
+  bool _thinkingDotsVisible = false;
+  bool _speechReady = false;
+  bool _speechAvailable = false;
+  bool _speechPermissionDenied = false;
+  bool _speechListening = false;
+  bool _speechSubmitPending = false;
+  String _liveUserTranscript = '';
+  String _finalUserTranscript = '';
+  String _voiceHint = '';
+  String _streamSnapshot = '';
+  String _streamPendingText = '';
+  String _fullAiResponseText = '';
+  DateTime? _listenReleasedAt;
+  DateTime? _firstTextTokenAt;
+  DateTime? _firstSentenceReadyAt;
+  DateTime? _firstAudioReadyAt;
+  DateTime? _playbackStartedAt;
+
+  // ── Particle count (Task 9d) ───────────────────────────────────────────────
+  late int _particleCount;
+  late List<_ParticleSeed> _mainOrbParticles;
+  late List<_ParticleSeed> _miniOrbParticles;
+
+  // ── Animation controllers ──────────────────────────────────────────────────
+  // Existing (keep)
+  late AnimationController _sphereCtrl;
+  late AnimationController _pulseCtrl;
+  late AnimationController _textFadeCtrl;
   late AnimationController _modeCtrl;
   late Animation<double> _modeFade;
-
-  late AnimationController _sphereCtrl;
-
-  late AnimationController _pulseCtrl;
-  late Animation<double> _pulseAnim;
-
-  late AnimationController _textFadeCtrl;
   late Animation<double> _textOpacity;
 
+  // New (Tasks 1, 2c, 3a, 10b, 14)
+  late AnimationController _timeCtrl;
+  late AnimationController _breathCtrl;
+  late AnimationController _stateTransitionCtrl;
+  late AnimationController _thinkCtrl;
+  late AnimationController _orbEntryCtrl;
+  late Animation<double> _orbEntryScale;
+  late Animation<double> _orbEntryOpacity;
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // initState
+  // ─────────────────────────────────────────────────────────────────────────
   @override
   void initState() {
     super.initState();
 
+    _particleCount = _resolveParticleCount();
+    _mainOrbParticles = _buildParticleSeeds(_particleCount, seed: 42);
+    _miniOrbParticles = _buildParticleSeeds(300, seed: 4242);
+
+    // Existing controllers
+    _sphereCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 4),
+    )..repeat();
+    _pulseCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1200),
+    )..repeat(reverse: true);
+    _textFadeCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 450),
+    );
+    _textOpacity = CurvedAnimation(parent: _textFadeCtrl, curve: Curves.easeIn);
     _modeCtrl = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 350),
     );
     _modeFade = CurvedAnimation(parent: _modeCtrl, curve: Curves.easeInOut);
 
-    _sphereCtrl = AnimationController(
+    // New controllers
+    _timeCtrl = AnimationController(
       vsync: this,
-      duration: const Duration(seconds: 4),
+      duration: const Duration(seconds: 60),
     )..repeat();
-
-    _pulseCtrl = AnimationController(
+    _breathCtrl = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 1200),
+      duration: const Duration(milliseconds: 3200),
+    )..repeat(reverse: true);
+    _stateTransitionCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 500),
     );
-    _pulseAnim = Tween<double>(begin: 0.95, end: 1.05).animate(
-      CurvedAnimation(parent: _pulseCtrl, curve: Curves.easeInOut),
+    _thinkCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 650),
+    );
+    _orbEntryCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 700),
     );
 
-    _textFadeCtrl = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 450),
+    _orbEntryScale = TweenSequence<double>([
+      TweenSequenceItem(
+        tween: Tween(
+          begin: 0.3,
+          end: 1.08,
+        ).chain(CurveTween(curve: Curves.easeOut)),
+        weight: 70,
+      ),
+      TweenSequenceItem(
+        tween: Tween(
+          begin: 1.08,
+          end: 1.0,
+        ).chain(CurveTween(curve: Curves.easeIn)),
+        weight: 30,
+      ),
+    ]).animate(_orbEntryCtrl);
+
+    _orbEntryOpacity = Tween<double>(begin: 0.0, end: 1.0).animate(
+      CurvedAnimation(
+        parent: _orbEntryCtrl,
+        curve: const Interval(0.0, 0.6, curve: Curves.easeIn),
+      ),
     );
-    _textOpacity =
-        CurvedAnimation(parent: _textFadeCtrl, curve: Curves.easeIn);
+
+    _timeCtrl.addListener(_onTimeTick);
+
+    _speechToText = stt.SpeechToText();
+    _tts = FlutterTts();
+    _tts.setLanguage('en-US');
+    _tts.setSpeechRate(0.50);
+    _tts.setVolume(1.0);
+    _tts.setCompletionHandler(() {
+      if (mounted && _deviceTtsActive) {
+        unawaited(_handleTtsCompleted());
+      }
+    });
+    _speechPlayer = AudioPlayer();
+    _speechPlayerSub = _speechPlayer.playerStateStream.listen((state) {
+      if (!mounted ||
+          !_ttsCompletionArmed ||
+          _deviceTtsActive ||
+          _activeSpeechChunk == null) {
+        return;
+      }
+      if (state.processingState == ProcessingState.completed) {
+        unawaited(_handleTtsCompleted());
+      }
+    });
+
+    _checkConnectivity();
+    _connectivitySub = Connectivity().onConnectivityChanged.listen((result) {
+      final offline = result == ConnectivityResult.none;
+      if (mounted && offline != _isOffline) {
+        setState(() => _isOffline = offline);
+      }
+    });
   }
 
+  Future<void> _checkConnectivity() async {
+    final result = await Connectivity().checkConnectivity();
+    if (mounted) {
+      setState(() => _isOffline = result == ConnectivityResult.none);
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // dispose
+  // ─────────────────────────────────────────────────────────────────────────
   @override
   void dispose() {
-    _modeCtrl.dispose();
     _sphereCtrl.dispose();
     _pulseCtrl.dispose();
     _textFadeCtrl.dispose();
+    _modeCtrl.dispose();
+    _timeCtrl.dispose();
+    _breathCtrl.dispose();
+    _stateTransitionCtrl.dispose();
+    _thinkCtrl.dispose();
+    _orbEntryCtrl.dispose();
     _scrollCtrl.dispose();
+    _responseScrollCtrl.dispose();
+    _wordTimer?.cancel();
+    _connectivitySub?.cancel();
+    _voiceResponseStreamSub?.cancel();
+    _speechPlayerSub?.cancel();
+    unawaited(_cancelSpeechRecognition());
+    unawaited(_speechPlayer.stop());
+    unawaited(_speechPlayer.dispose());
+    _tts.stop();
+    for (final path in _speechTempPaths) {
+      try {
+        File(path).deleteSync();
+      } catch (_) {
+        // Ignore temp cleanup failures during dispose.
+      }
+    }
     super.dispose();
   }
 
-  // ── Mode switching ─────────────────────────────────────────────────────────
-  void _enterVoice() {
-    HapticFeedback.mediumImpact();
-    setState(() {
-      _mode = _AiMode.voice;
-      _voiceState = _VoiceState.idle;
-      _voiceText = '';
-    });
-    _modeCtrl.forward(from: 0);
-    _textFadeCtrl.reset();
+  // ─────────────────────────────────────────────────────────────────────────
+  // Task 9d — Particle count heuristic
+  // ─────────────────────────────────────────────────────────────────────────
+  int _resolveParticleCount() {
+    try {
+      return Platform.numberOfProcessors <= 4 ? 500 : 800;
+    } catch (_) {
+      return 800;
+    }
   }
 
-  void _exitVoice() {
+  // ─────────────────────────────────────────────────────────────────────────
+  // Task 9e — Time tick: amplitude + beat + pulse ring updates
+  // ─────────────────────────────────────────────────────────────────────────
+  bool get _showTranscript =>
+      _words.isNotEmpty &&
+      (_voiceState == _VoiceState.speaking ||
+          _voiceState == _VoiceState.waiting);
+  bool get _showMiniOrb =>
+      _voiceState == _VoiceState.speaking || _voiceState == _VoiceState.waiting;
+  bool get _showCenterOrb => !_showMiniOrb;
+  bool get _showControls => !_isExiting;
+  bool get _showUserTranscript =>
+      ((_voiceState == _VoiceState.listening ||
+              _voiceState == _VoiceState.thinking) &&
+          (_displayUserTranscript.isNotEmpty || _voiceHint.isNotEmpty)) ||
+      (_voiceHint.isNotEmpty &&
+          (_voiceState == _VoiceState.waiting ||
+              _voiceState == _VoiceState.idle));
+  String get _displayUserTranscript =>
+      (_voiceState == _VoiceState.thinking
+              ? _finalUserTranscript
+              : _liveUserTranscript)
+          .trim();
+  double get _coolTransitionBlend => Curves.easeInOutCubicEmphasized.transform(
+    _stateTransitionCtrl.value.clamp(0.0, 1.0),
+  );
+  double get _elapsedSeconds => _timeCtrl.value * 60.0;
+  String get _voiceStatusText => switch (_voiceState) {
+    _VoiceState.listening =>
+      _speechPermissionDenied
+          ? 'Microphone access is needed for voice mode'
+          : 'Release to send',
+    _VoiceState.thinking => 'Thinking...',
+    _VoiceState.speaking => '',
+    _VoiceState.waiting || _VoiceState.idle =>
+      _speechPermissionDenied
+          ? 'Enable microphone access to talk'
+          : 'Hold to talk',
+  };
+
+  Future<void> _handleTtsCompleted() async {
+    if (!_ttsCompletionArmed ||
+        _mode != _AiMode.voice ||
+        _voiceState != _VoiceState.speaking) {
+      return;
+    }
+    if (_deviceTtsActive) {
+      _deviceTtsActive = false;
+      await _settleToWaitingState();
+      return;
+    }
+    await _handleSpeechChunkCompleted();
+  }
+
+  Future<File> _persistSpeechAudio(Uint8List wavBytes) async {
+    final tempDir = await getTemporaryDirectory();
+    final file = File(
+      '${tempDir.path}${Platform.pathSeparator}'
+      'mtengatenga_voice_${DateTime.now().millisecondsSinceEpoch}.wav',
+    );
+    await file.writeAsBytes(wavBytes, flush: true);
+    _speechTempPaths.add(file.path);
+    return file;
+  }
+
+  /// Resolve which TTS provider to use.
+  ///
+  /// Priority: explicit `TTS_PROVIDER` env var → first provider whose API key
+  /// is present → Gemini (always available via GEMINI_API_KEY).
+  String get _ttsProvider {
+    final explicit = dotenv.env['TTS_PROVIDER']?.trim().toLowerCase() ?? '';
+    if (explicit.isNotEmpty) return explicit;
+    // Default to Gemini — uses the same GEMINI_API_KEY as text generation.
+    if ((dotenv.env['ELEVENLABS_API_KEY']?.trim() ?? '').isNotEmpty) {
+      return 'elevenlabs';
+    }
+    if ((dotenv.env['OPENAI_API_KEY']?.trim() ?? '').isNotEmpty) {
+      return 'openai';
+    }
+    if ((dotenv.env['GOOGLE_CLOUD_TTS_KEY']?.trim() ?? '').isNotEmpty) {
+      return 'google_cloud';
+    }
+    return 'gemini';
+  }
+
+  /// Synthesize speech via the configured TTS provider.
+  Future<({Uint8List wavBytes, Duration duration})> _synthesizeSpeech(
+    String text,
+  ) async {
+    switch (_ttsProvider) {
+      case 'elevenlabs':
+        final clip = await _elevenLabsTtsService.synthesizeSpeech(text);
+        return (wavBytes: clip.wavBytes, duration: clip.duration);
+      case 'openai':
+        final clip = await _openAiTtsService.synthesizeSpeech(text);
+        return (wavBytes: clip.wavBytes, duration: clip.duration);
+      case 'google_cloud':
+        final clip = await _googleCloudTtsService.synthesizeSpeech(text);
+        return (wavBytes: clip.wavBytes, duration: clip.duration);
+      case 'gemini':
+      default:
+        final clip = await _geminiTtsService.synthesizeSpeech(text);
+        return (wavBytes: clip.wavBytes, duration: clip.duration);
+    }
+  }
+
+  Future<Duration> _prepareGeminiSpeechPlayback(String text) async {
+    final clip = await _synthesizeSpeech(text);
+    if (!_ttsCompletionArmed ||
+        !mounted ||
+        _mode != _AiMode.voice ||
+        (_voiceState != _VoiceState.thinking &&
+            _voiceState != _VoiceState.speaking)) {
+      return Duration.zero;
+    }
+
+    final audioFile = await _persistSpeechAudio(clip.wavBytes);
+    if (!_ttsCompletionArmed ||
+        !mounted ||
+        _mode != _AiMode.voice ||
+        (_voiceState != _VoiceState.thinking &&
+            _voiceState != _VoiceState.speaking)) {
+      return Duration.zero;
+    }
+
+    await _speechPlayer.stop();
+    await _speechPlayer.setFilePath(audioFile.path);
+    return clip.duration;
+  }
+
+  Future<void> _deleteSpeechAudioPath(String path) async {
+    if (!_speechTempPaths.remove(path)) return;
+    try {
+      await File(path).delete();
+    } catch (_) {
+      // Ignore temp cleanup failures for transient TTS files.
+    }
+  }
+
+  Future<void> _clearSpeechAudioFiles() async {
+    if (_speechTempPaths.isEmpty) return;
+    final paths = List<String>.from(_speechTempPaths);
+    _speechTempPaths.clear();
+    for (final path in paths) {
+      try {
+        await File(path).delete();
+      } catch (_) {
+        // Ignore temp cleanup failures for transient TTS files.
+      }
+    }
+  }
+
+  Future<void> _stopTtsPlayback() async {
+    _ttsCompletionArmed = false;
+    _deviceTtsActive = false;
+    try {
+      await _speechPlayer.stop();
+    } catch (_) {
+      // Ignore audio player stop failures and continue resetting the UI.
+    }
+    try {
+      await _tts.stop();
+    } catch (_) {
+      // Ignore plugin stop failures and continue resetting the UI.
+    }
+  }
+
+  Future<void> _cancelVoiceResponseStream() async {
+    await _voiceResponseStreamSub?.cancel();
+    _voiceResponseStreamSub = null;
+  }
+
+  void _resetStreamingResponseState() {
+    _speechQueue.clear();
+    _activeSpeechChunk = null;
+    _speechStreamDone = false;
+    _geminiTtsFailed = false;
+    _hasStartedSpeakingThisTurn = false;
+    _unsynthesizedText = '';
+    _deviceTtsFallbackPending = false;
+    _streamSnapshot = '';
+    _streamPendingText = '';
+    _fullAiResponseText = '';
+    _speechSynthesisChain = Future<void>.value();
+    _firstTextTokenAt = null;
+    _firstSentenceReadyAt = null;
+    _firstAudioReadyAt = null;
+    _playbackStartedAt = null;
+  }
+
+  void _resetVoiceReactivity() {
+    _pulseRings.clear();
+    _lastAmplitude = 0.0;
+    _beatStrength = 0.0;
+    _beatDecayStart = 0.0;
+    _lastSpeakingAmp = 0.0;
+    _liveMicLevel = 0.0;
+  }
+
+  Future<void> _clearVoiceTranscript({bool animate = true}) async {
+    _cancelWordStream();
+    if (_showTranscript && animate && _textFadeCtrl.value > 0) {
+      await _textFadeCtrl.reverse();
+    } else {
+      _textFadeCtrl.reset();
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _words = [];
+      _revealedWordCount = 0;
+      _wordRevealDelays = const [];
+    });
+    if (_responseScrollCtrl.hasClients) {
+      _responseScrollCtrl.jumpTo(0);
+    }
+  }
+
+  Future<void> _resetVoiceOverlayState() async {
+    _voiceTurnId++;
+    await _cancelVoiceResponseStream();
+    await _cancelSpeechRecognition();
+    await _stopTtsPlayback();
+    await _clearSpeechAudioFiles();
+    _cancelWordStream();
+    _resetStreamingResponseState();
+    _resetVoiceReactivity();
     _pulseCtrl
       ..stop()
       ..reset();
-    _modeCtrl.reverse().then((_) {
-      if (mounted) setState(() => _mode = _AiMode.text);
+    _textFadeCtrl.reset();
+    _stateTransitionCtrl.value = 0.0;
+    _thinkCtrl.value = 0.0;
+
+    if (!mounted) return;
+    setState(() {
+      _voiceState = _VoiceState.idle;
+      _words = [];
+      _revealedWordCount = 0;
+      _wordRevealDelays = const [];
+      _thinkingDotsVisible = false;
+      _isExiting = false;
+      _speechListening = false;
+      _speechSubmitPending = false;
+      _liveUserTranscript = '';
+      _finalUserTranscript = '';
+      _voiceHint = '';
     });
   }
 
-  // ── Voice state machine ────────────────────────────────────────────────────
-  void _setVoiceState(_VoiceState s) {
-    setState(() => _voiceState = s);
-    if (s == _VoiceState.speaking) {
+  void _onTimeTick() {
+    if (!mounted) return;
+    _ampFrameCount++;
+    if (_ampFrameCount.isEven) {
+      final fallbackAmplitude = _AmplitudeEngine.getValue(
+        _elapsedSeconds,
+        _voiceState,
+      );
+      _cachedAmplitude = _voiceState == _VoiceState.listening
+          ? max(_liveMicLevel, fallbackAmplitude * 0.32)
+          : fallbackAmplitude;
+      _updateBeatDetection(_elapsedSeconds);
+      _checkPulseEmit(_elapsedSeconds);
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Task 12a — Beat detection
+  // ─────────────────────────────────────────────────────────────────────────
+  void _updateBeatDetection(double elapsed) {
+    if (_voiceState != _VoiceState.speaking) {
+      _beatStrength = 0.0;
+      _lastSpeakingAmp = 0.0;
+      return;
+    }
+    final amp = _cachedAmplitude;
+    if (amp > 0.60 && _lastSpeakingAmp <= 0.60) {
+      _beatStrength = 1.0;
+      _beatDecayStart = elapsed;
+    }
+    final beatAge = elapsed - _beatDecayStart;
+    _beatStrength = (1.0 - beatAge / 0.25).clamp(0.0, 1.0);
+    _lastSpeakingAmp = amp;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Task 11b — Pulse ring emission
+  // ─────────────────────────────────────────────────────────────────────────
+  void _checkPulseEmit(double elapsed) {
+    if (_voiceState != _VoiceState.listening) return;
+    final amp = _cachedAmplitude;
+    if (amp > 0.65 && _lastAmplitude <= 0.65) {
+      _pulseRings.add(_PulseRing(elapsed));
+      if (_pulseRings.length > 4) _pulseRings.removeAt(0);
+    }
+    _lastAmplitude = amp;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Task 3a — Centralised state change
+  // ─────────────────────────────────────────────────────────────────────────
+  void _onStateChanged(_VoiceState newState) {
+    setState(() {
+      _voiceState = newState;
+      if (newState != _VoiceState.thinking) {
+        _thinkingDotsVisible = false;
+      }
+    });
+
+    if (newState == _VoiceState.speaking) {
       _pulseCtrl.repeat(reverse: true);
     } else {
       _pulseCtrl
         ..stop()
         ..reset();
     }
-  }
 
-  void _setVoiceText(String t) {
-    _textFadeCtrl.reset();
-    setState(() => _voiceText = t);
-    if (t.isNotEmpty) _textFadeCtrl.forward();
-  }
-
-  void _handleOrbTap() {
-    HapticFeedback.mediumImpact();
-    switch (_voiceState) {
+    switch (newState) {
       case _VoiceState.idle:
-        _setVoiceState(_VoiceState.listening);
-        _setVoiceText('');
-        _runDemoFlow();
+        _stateTransitionCtrl.animateTo(
+          0.0,
+          duration: const Duration(milliseconds: 600),
+          curve: Curves.easeOut,
+        );
+        _thinkCtrl.animateTo(
+          0.0,
+          duration: const Duration(milliseconds: 260),
+          curve: Curves.easeOut,
+        );
+        break;
       case _VoiceState.listening:
+        _stateTransitionCtrl.animateTo(
+          0.0,
+          duration: const Duration(milliseconds: 420),
+          curve: Curves.easeOut,
+        );
+        _thinkCtrl.animateTo(
+          0.0,
+          duration: const Duration(milliseconds: 250),
+          curve: Curves.easeOut,
+        );
+        break;
       case _VoiceState.thinking:
+        _stateTransitionCtrl.animateTo(
+          1.0,
+          duration: const Duration(milliseconds: 920),
+          curve: Curves.easeInOutCubicEmphasized,
+        );
+        _thinkCtrl.animateTo(
+          0.0,
+          duration: const Duration(milliseconds: 260),
+          curve: Curves.easeOut,
+        );
+        Future.delayed(const Duration(milliseconds: 500), () {
+          if (mounted && _voiceState == _VoiceState.thinking) {
+            setState(() => _thinkingDotsVisible = true);
+          }
+        });
+        break;
       case _VoiceState.speaking:
-        _setVoiceState(_VoiceState.idle);
-        _setVoiceText('');
+        _stateTransitionCtrl.animateTo(
+          1.0,
+          duration: const Duration(milliseconds: 500),
+          curve: Curves.easeOut,
+        );
+        _thinkCtrl.animateTo(
+          0.0,
+          duration: const Duration(milliseconds: 380),
+          curve: Curves.easeOut,
+        );
+        break;
+      case _VoiceState.waiting:
+        _stateTransitionCtrl.animateTo(
+          0.0,
+          duration: const Duration(milliseconds: 820),
+          curve: Curves.easeInOutCubic,
+        );
+        _thinkCtrl.animateTo(
+          0.0,
+          duration: const Duration(milliseconds: 420),
+          curve: Curves.easeOut,
+        );
+        break;
     }
   }
 
-  Future<void> _runDemoFlow() async {
-    await Future.delayed(const Duration(seconds: 2));
-    if (!mounted || _voiceState != _VoiceState.listening) return;
-    _setVoiceState(_VoiceState.thinking);
-    await Future.delayed(const Duration(milliseconds: 1100));
-    if (!mounted || _voiceState != _VoiceState.thinking) return;
-    _setVoiceState(_VoiceState.speaking);
-    _setVoiceText(_Mock.voiceResponse);
-    await Future.delayed(const Duration(seconds: 7));
-    if (!mounted) return;
-    _setVoiceState(_VoiceState.idle);
-    _setVoiceText('');
+  // ─────────────────────────────────────────────────────────────────────────
+  // Task 3b — Sequenced orb-shrink → text-stream
+  // ─────────────────────────────────────────────────────────────────────────
+  int _nextVoiceTurnId() => ++_voiceTurnId;
+
+  void _logVoiceMetric(String label, DateTime? timestamp) {
+    if (_listenReleasedAt == null || timestamp == null) return;
+    final elapsed = timestamp.difference(_listenReleasedAt!).inMilliseconds;
+    debugPrint('Voice turn metric [$label]: ${elapsed}ms');
   }
 
-  // ── Text mode messaging ────────────────────────────────────────────────────
-  void _sendMessage(String text) {
-    if (text.trim().isEmpty) return;
+  Future<bool> _ensureSpeechReady() async {
+    if (_speechReady) return _speechAvailable;
+    final available = await _speechToText.initialize(
+      onStatus: _handleSpeechStatus,
+      onError: _handleSpeechError,
+      finalTimeout: const Duration(milliseconds: 900),
+    );
+    _speechAvailable = available;
+    _speechReady = available;
+    return _speechAvailable;
+  }
+
+  Future<void> _cancelSpeechRecognition() async {
+    try {
+      if (_speechReady || _speechListening) {
+        await _speechToText.cancel();
+      }
+    } catch (_) {
+      // Ignore speech cleanup errors during mode transitions.
+    } finally {
+      _speechListening = false;
+    }
+  }
+
+  Future<void> _stopSpeechRecognition() async {
+    try {
+      if (_speechReady || _speechListening) {
+        await _speechToText.stop();
+      }
+    } catch (_) {
+      _speechListening = false;
+    }
+  }
+
+  void _handleSpeechStatus(String status) {
+    final isListening = status == stt.SpeechToText.listeningStatus;
+    final stopped =
+        status == stt.SpeechToText.notListeningStatus ||
+        status == stt.SpeechToText.doneStatus;
+    if (mounted && _speechListening != isListening) {
+      setState(() => _speechListening = isListening);
+    } else {
+      _speechListening = isListening;
+    }
+    if (stopped) {
+      _speechListening = false;
+      unawaited(_maybeSubmitRecognizedSpeech());
+    }
+  }
+
+  void _handleSpeechError(SpeechRecognitionError error) {
+    final message = error.errorMsg.trim();
+    final lower = message.toLowerCase();
+    final permissionIssue = lower.contains('permission');
+    _speechPermissionDenied = permissionIssue;
+    _speechAvailable = false;
+    _speechReady = false;
+    _speechListening = false;
+    if (!mounted) return;
     setState(() {
-      _messages.add(_Msg(text: text.trim(), isUser: true));
+      _voiceHint = permissionIssue
+          ? 'Microphone access is off. Enable it and try again.'
+          : 'I had trouble hearing that. Hold to talk and try again.';
     });
-    Future.delayed(const Duration(milliseconds: 850), () {
+    if (_voiceState == _VoiceState.listening) {
+      _onStateChanged(_VoiceState.waiting);
+    }
+  }
+
+  void _handleSpeechResult(SpeechRecognitionResult result) {
+    final transcript = result.recognizedWords.trim();
+    if (!mounted) {
+      _liveUserTranscript = transcript;
+      if (result.finalResult) {
+        _finalUserTranscript = transcript;
+      }
+      return;
+    }
+    setState(() {
+      _liveUserTranscript = transcript;
+      if (result.finalResult) {
+        _finalUserTranscript = transcript;
+      }
+    });
+    if (result.finalResult) {
+      unawaited(_maybeSubmitRecognizedSpeech());
+    }
+  }
+
+  void _handleSpeechSoundLevel(double level) {
+    _liveMicLevel = _normalizeSpeechLevel(level);
+  }
+
+  double _normalizeSpeechLevel(double level) {
+    final normalized = ((level + 2.0) / 16.0).clamp(0.0, 1.0);
+    return pow(normalized, 0.8).toDouble();
+  }
+
+  Future<void> _startListeningTurn() async {
+    final turnId = _nextVoiceTurnId();
+    await _cancelVoiceResponseStream();
+    await _cancelSpeechRecognition();
+    await _stopTtsPlayback();
+    await _clearSpeechAudioFiles();
+    _resetStreamingResponseState();
+    _resetVoiceReactivity();
+    _speechSubmitPending = false;
+    _liveUserTranscript = '';
+    _finalUserTranscript = '';
+    _voiceHint = '';
+    _speechPermissionDenied = false;
+    _listenReleasedAt = null;
+
+    if (_showTranscript) {
+      await _clearVoiceTranscript();
+    }
+
+    final available = await _ensureSpeechReady();
+    if (!mounted || turnId != _voiceTurnId) return;
+    if (!available) {
+      setState(() {
+        _voiceHint = _speechPermissionDenied
+            ? 'Microphone access is off. Enable it and try again.'
+            : 'Speech recognition is unavailable on this device right now.';
+      });
+      _onStateChanged(_VoiceState.waiting);
+      return;
+    }
+
+    _onStateChanged(_VoiceState.listening);
+    try {
+      await _speechToText.listen(
+        onResult: _handleSpeechResult,
+        onSoundLevelChange: _handleSpeechSoundLevel,
+        pauseFor: const Duration(seconds: 8),
+        listenFor: const Duration(seconds: 30),
+        listenOptions: stt.SpeechListenOptions(
+          partialResults: true,
+          listenMode: stt.ListenMode.dictation,
+          cancelOnError: true,
+        ),
+      );
+      if (!mounted || turnId != _voiceTurnId) return;
+      setState(() => _speechListening = true);
+    } catch (_) {
+      if (!mounted || turnId != _voiceTurnId) return;
+      setState(() {
+        _speechListening = false;
+        _voiceHint = 'I couldn’t start listening. Hold to talk and try again.';
+      });
+      _onStateChanged(_VoiceState.waiting);
+    }
+  }
+
+  Future<void> _finishListeningTurn() async {
+    if (_voiceState != _VoiceState.listening) return;
+    _speechSubmitPending = true;
+    _listenReleasedAt = DateTime.now();
+    try {
+      await _stopSpeechRecognition();
+    } catch (_) {
+      _speechListening = false;
+    }
+    await _maybeSubmitRecognizedSpeech();
+  }
+
+  Future<void> _maybeSubmitRecognizedSpeech() async {
+    if (!_speechSubmitPending ||
+        _speechListening ||
+        _voiceState != _VoiceState.listening ||
+        _mode != _AiMode.voice) {
+      return;
+    }
+    _speechSubmitPending = false;
+    final transcript = _finalUserTranscript.trim().isNotEmpty
+        ? _finalUserTranscript.trim()
+        : _liveUserTranscript.trim();
+    if (transcript.isEmpty) {
       if (!mounted) return;
       setState(() {
-        _messages.add(_Msg(
-          text: _Mock.responses[_responseIdx % _Mock.responses.length],
-          isUser: false,
-        ));
-        _responseIdx++;
+        _voiceHint = 'I didn’t catch that. Hold to talk and try again.';
       });
-      _scrollToBottom();
+      _onStateChanged(_VoiceState.waiting);
+      return;
+    }
+    await _submitRecognizedSpeech(transcript);
+  }
+
+  Future<void> _submitRecognizedSpeech(String transcript) async {
+    final turnId = _voiceTurnId;
+    _logVoiceMetric('listen_end', _listenReleasedAt);
+    if (_showTranscript) {
+      await _clearVoiceTranscript();
+    }
+    if (!mounted || turnId != _voiceTurnId) return;
+
+    setState(() {
+      _finalUserTranscript = transcript;
+      _liveUserTranscript = transcript;
+      _voiceHint = '';
     });
+    _onStateChanged(_VoiceState.thinking);
+    unawaited(_consumeVoiceResponseStream(turnId, transcript));
+  }
+
+  Future<void> _consumeVoiceResponseStream(
+    int turnId,
+    String transcript,
+  ) async {
+    if (_isOffline) {
+      await _enterSpeakingState(
+        'Voice guide needs an internet connection before I can answer out loud.',
+        speakText: false,
+      );
+      return;
+    }
+
+    await _cancelVoiceResponseStream();
+    final stream = _geminiService.voiceQueryStream(
+      widget.artifact,
+      transcript,
+      history: List<Map<String, String>>.from(_conversationHistory),
+    );
+
+    _voiceResponseStreamSub = stream.listen(
+      (snapshot) => _handleVoiceResponseSnapshot(turnId, snapshot),
+      onError: (Object error, StackTrace stackTrace) {
+        unawaited(_handleVoiceResponseError(turnId, error, stackTrace));
+      },
+      onDone: () {
+        unawaited(_finalizeVoiceResponseStream(turnId, transcript));
+      },
+      cancelOnError: true,
+    );
+  }
+
+  Future<void> _handleVoiceResponseError(
+    int turnId,
+    Object error,
+    StackTrace stackTrace,
+  ) async {
+    debugPrint('Voice response stream failed: $error');
+    debugPrintStack(stackTrace: stackTrace);
+    if (!mounted || turnId != _voiceTurnId) return;
+    final isQuota = error.toString().toLowerCase().contains('quota') ||
+        error.toString().toLowerCase().contains('rate limit');
+    final String fallback;
+    if (_isOffline) {
+      fallback =
+          'Voice guide needs an internet connection before I can answer out loud.';
+    } else if (isQuota) {
+      fallback =
+          'The AI guide is a bit busy right now. Please wait a moment and try again.';
+    } else {
+      fallback =
+          'I hit a snag preparing that response. Please try again in a moment.';
+    }
+    await _enterSpeakingState(
+      fallback,
+      speakText: true,
+      preferGeminiPlayback: false,
+    );
+  }
+
+  void _handleVoiceResponseSnapshot(int turnId, String snapshot) {
+    if (!mounted || turnId != _voiceTurnId) return;
+    final delta = _extractStreamDelta(snapshot);
+    if (delta.isEmpty) return;
+
+    _fullAiResponseText = '$_fullAiResponseText$delta'.trimLeft();
+    _streamPendingText = '$_streamPendingText$delta';
+    _firstTextTokenAt ??= DateTime.now();
+    _logVoiceMetric('first_text_token', _firstTextTokenAt);
+
+    for (final chunk in _takeReadySentenceChunks()) {
+      _firstSentenceReadyAt ??= DateTime.now();
+      _logVoiceMetric('first_sentence_ready', _firstSentenceReadyAt);
+      _enqueueSpeechChunkSynthesis(turnId, chunk);
+    }
+  }
+
+  String _extractStreamDelta(String snapshot) {
+    final text = snapshot.trim();
+    if (text.isEmpty) return '';
+    if (_streamSnapshot.isEmpty) {
+      _streamSnapshot = text;
+      return text;
+    }
+    if (text.startsWith(_streamSnapshot)) {
+      final delta = text.substring(_streamSnapshot.length);
+      _streamSnapshot = text;
+      return delta;
+    }
+    if (_streamSnapshot.startsWith(text)) {
+      return '';
+    }
+    _streamSnapshot = text;
+    return text;
+  }
+
+  static const int _minChunkLength = 40;
+
+  List<String> _takeReadySentenceChunks({bool flushRemainder = false}) {
+    final chunks = <String>[];
+    final allMatches = RegExp(
+      r'(.+?[.!?])(?=\s|$)',
+      dotAll: true,
+    ).allMatches(_streamPendingText).toList();
+
+    if (allMatches.isEmpty && !flushRemainder) {
+      return chunks;
+    }
+
+    // Track sentence texts alongside their end positions in the source.
+    final sentenceTexts = <String>[];
+    final sentenceEnds = <int>[];
+    for (final match in allMatches) {
+      final sentence = match.group(0)?.trim();
+      if (sentence != null && sentence.isNotEmpty) {
+        sentenceTexts.add(sentence);
+        sentenceEnds.add(match.end);
+      }
+    }
+
+    // Merge short sentences together to avoid tiny TTS chunks that cause
+    // audible gaps between playback segments.
+    final buffer = StringBuffer();
+    var consumedUpTo = 0;
+    for (var i = 0; i < sentenceTexts.length; i++) {
+      if (buffer.isEmpty) {
+        buffer.write(sentenceTexts[i]);
+      } else {
+        buffer.write(' ${sentenceTexts[i]}');
+      }
+      if (buffer.length >= _minChunkLength) {
+        chunks.add(buffer.toString());
+        consumedUpTo = sentenceEnds[i];
+        buffer.clear();
+      }
+    }
+
+    // Keep leftover short sentences in the buffer for the next call, unless
+    // we are flushing the remainder.
+    if (buffer.isNotEmpty) {
+      if (flushRemainder) {
+        chunks.add(buffer.toString());
+        consumedUpTo = sentenceEnds.last;
+      }
+      // Otherwise consumedUpTo stays before these un-emitted sentences,
+      // so they remain in _streamPendingText for the next call.
+    }
+
+    if (flushRemainder) {
+      final remainder = _streamPendingText.substring(consumedUpTo).trim();
+      if (remainder.isNotEmpty) {
+        chunks.add(remainder);
+      }
+      consumedUpTo = _streamPendingText.length;
+    }
+    _streamPendingText = _streamPendingText.substring(consumedUpTo);
+    return chunks;
+  }
+
+  void _enqueueSpeechChunkSynthesis(int turnId, String text) {
+    final chunkText = text.trim();
+    if (chunkText.isEmpty) return;
+
+    // If Gemini TTS already failed, accumulate text for device TTS fallback.
+    if (_geminiTtsFailed) {
+      _unsynthesizedText = '$_unsynthesizedText $chunkText'.trimLeft();
+      return;
+    }
+
+    _speechSynthesisChain = _speechSynthesisChain.then((_) async {
+      if (!mounted || turnId != _voiceTurnId) return;
+      if (_geminiTtsFailed) {
+        _unsynthesizedText = '$_unsynthesizedText $chunkText'.trimLeft();
+        return;
+      }
+      try {
+        final translatedChunk = await _translationService.translate(chunkText);
+        final clip = await _synthesizeSpeech(translatedChunk);
+        if (!mounted || turnId != _voiceTurnId) return;
+        if (_geminiTtsFailed) {
+          _unsynthesizedText = '$_unsynthesizedText $chunkText'.trimLeft();
+          return;
+        }
+        final file = await _persistSpeechAudio(clip.wavBytes);
+        if (!mounted || turnId != _voiceTurnId) {
+          await _deleteSpeechAudioPath(file.path);
+          return;
+        }
+        _firstAudioReadyAt ??= DateTime.now();
+        _logVoiceMetric('first_audio_ready', _firstAudioReadyAt);
+        setState(() {
+          _speechQueue.add(
+            _SpeechChunk(
+              text: translatedChunk,
+              duration: clip.duration,
+              audioPath: file.path,
+            ),
+          );
+        });
+        await _maybeStartSpeechPlayback(turnId);
+      } catch (error, stackTrace) {
+        debugPrint('Chunk TTS synthesis failed: $error');
+        debugPrintStack(stackTrace: stackTrace);
+        _geminiTtsFailed = true;
+        _unsynthesizedText = '$_unsynthesizedText $chunkText'.trimLeft();
+      }
+    });
+  }
+
+  Future<void> _maybeStartSpeechPlayback(int turnId) async {
+    if (!mounted ||
+        turnId != _voiceTurnId ||
+        _deviceTtsActive ||
+        _activeSpeechChunk != null ||
+        _speechQueue.isEmpty) {
+      return;
+    }
+
+    final chunk = _speechQueue.removeFirst();
+
+    // Guard: skip chunks whose audio file was already cleaned up or never written.
+    if (!File(chunk.audioPath).existsSync()) {
+      debugPrint('Audio file missing, skipping chunk: ${chunk.audioPath}');
+      if (_speechQueue.isNotEmpty) {
+        await _maybeStartSpeechPlayback(turnId);
+      } else if (_speechStreamDone) {
+        await _settleToWaitingState();
+      }
+      return;
+    }
+
+    _activeSpeechChunk = chunk;
+    _ttsCompletionArmed = true;
+    if (_voiceState == _VoiceState.thinking) {
+      _onStateChanged(_VoiceState.speaking);
+    }
+
+    try {
+      await _speechPlayer.stop();
+      await _speechPlayer.setFilePath(chunk.audioPath);
+      if (!mounted || turnId != _voiceTurnId) return;
+      _playbackStartedAt ??= DateTime.now();
+      _logVoiceMetric('playback_start', _playbackStartedAt);
+      _hasStartedSpeakingThisTurn = true;
+      _finalUserTranscript = '';
+      _liveUserTranscript = '';
+      if (_words.isEmpty) {
+        _textFadeCtrl.forward(from: 0.0);
+      } else {
+        _textFadeCtrl.forward();
+      }
+      _appendTranscriptChunk(
+        chunk.text,
+        targetDuration: chunk.duration,
+        leadIn: _words.isEmpty
+            ? const Duration(milliseconds: 40)
+            : const Duration(milliseconds: 16),
+      );
+      unawaited(_speechPlayer.play());
+    } catch (_) {
+      await _deleteSpeechAudioPath(chunk.audioPath);
+      _activeSpeechChunk = null;
+      if (_speechStreamDone) {
+        await _settleToWaitingState();
+      }
+    }
+  }
+
+  void _appendTranscriptChunk(
+    String text, {
+    Duration? targetDuration,
+    Duration leadIn = const Duration(milliseconds: 40),
+  }) {
+    final normalizedText = text.trim();
+    if (normalizedText.isEmpty) return;
+    final words = normalizedText.split(RegExp(r'\s+'));
+    final revealDelays = _buildWordRevealDelays(
+      words,
+      targetDuration: targetDuration,
+      leadIn: leadIn,
+    );
+    setState(() {
+      _words = [..._words, ...words];
+      _wordRevealDelays = [..._wordRevealDelays, ...revealDelays];
+    });
+    if (_wordTimer == null) {
+      _scheduleNextWord();
+    }
+  }
+
+  Future<void> _handleSpeechChunkCompleted() async {
+    final completedChunk = _activeSpeechChunk;
+    _activeSpeechChunk = null;
+    if (completedChunk != null) {
+      await _deleteSpeechAudioPath(completedChunk.audioPath);
+    }
+    if (!mounted || _mode != _AiMode.voice) return;
+    if (_speechQueue.isNotEmpty) {
+      await _maybeStartSpeechPlayback(_voiceTurnId);
+      return;
+    }
+    if (_speechStreamDone) {
+      if (_deviceTtsFallbackPending) {
+        await _speakUnsynthesizedFallback();
+        return;
+      }
+      _armWaitingAfterTranscript();
+    }
+  }
+
+  void _armWaitingAfterTranscript() {
+    if (!mounted || _voiceState != _VoiceState.speaking) return;
+    if (_revealedWordCount >= _words.length) {
+      unawaited(_settleToWaitingState());
+      return;
+    }
+    _onWordStreamComplete = () {
+      if (mounted && _voiceState == _VoiceState.speaking) {
+        unawaited(_settleToWaitingState());
+      }
+    };
+  }
+
+  Future<void> _speakUnsynthesizedFallback() async {
+    _deviceTtsFallbackPending = false;
+    final remaining = _unsynthesizedText.trim();
+    if (remaining.isEmpty || !mounted || _mode != _AiMode.voice) {
+      _armWaitingAfterTranscript();
+      return;
+    }
+    _ttsCompletionArmed = true;
+    _deviceTtsActive = true;
+    _appendTranscriptChunk(remaining);
+    try {
+      await _tts.speak(remaining);
+    } catch (_) {
+      await _settleToWaitingState();
+    }
+  }
+
+  Future<void> _finalizeVoiceResponseStream(
+    int turnId,
+    String userTranscript,
+  ) async {
+    if (!mounted || turnId != _voiceTurnId) return;
+    _speechStreamDone = true;
+    for (final chunk in _takeReadySentenceChunks(flushRemainder: true)) {
+      _enqueueSpeechChunkSynthesis(turnId, chunk);
+    }
+    await _speechSynthesisChain;
+    if (!mounted || turnId != _voiceTurnId) return;
+
+    final finalResponse = _fullAiResponseText.trim().isEmpty
+        ? 'I have a quiet moment right now. Try asking again and I will jump back in.'
+        : _fullAiResponseText.trim();
+
+    _conversationHistory.add({'role': 'user', 'content': userTranscript});
+    _conversationHistory.add({'role': 'model', 'content': finalResponse});
+    if (_conversationHistory.length > 20) {
+      _conversationHistory.removeRange(0, _conversationHistory.length - 20);
+    }
+
+    if (!_hasStartedSpeakingThisTurn) {
+      // Nothing played yet. Skip Gemini retry if it already failed.
+      await _enterSpeakingState(
+        finalResponse,
+        speakText: true,
+        preferGeminiPlayback: !_geminiTtsFailed,
+      );
+      return;
+    }
+
+    // Some chunks played. If Gemini TTS failed mid-stream, queue device TTS
+    // fallback for the remaining unsynthesized text.
+    if (_geminiTtsFailed && _unsynthesizedText.trim().isNotEmpty) {
+      _deviceTtsFallbackPending = true;
+      if (_activeSpeechChunk == null && _speechQueue.isEmpty) {
+        await _speakUnsynthesizedFallback();
+      }
+      // Otherwise _handleSpeechChunkCompleted will trigger the fallback
+      // after the last queued chunk finishes playing.
+      return;
+    }
+
+    if (_activeSpeechChunk == null && _speechQueue.isEmpty) {
+      _armWaitingAfterTranscript();
+    }
+  }
+
+  Future<void> _enterSpeakingState(
+    String text, {
+    bool speakText = true,
+    bool preferGeminiPlayback = true,
+  }) async {
+    Duration? preparedSpeechDuration;
+    var useGeminiPlayback = false;
+
+    if (speakText) {
+      _ttsCompletionArmed = true;
+      if (preferGeminiPlayback) {
+        try {
+          preparedSpeechDuration = await _prepareGeminiSpeechPlayback(text);
+          useGeminiPlayback = preparedSpeechDuration > Duration.zero;
+        } catch (e, st) {
+          debugPrint(
+            'Gemini voice preparation failed, falling back to device TTS: $e',
+          );
+          debugPrintStack(stackTrace: st);
+          useGeminiPlayback = false;
+        }
+      }
+    }
+
+    if (!mounted ||
+        (_voiceState != _VoiceState.thinking &&
+            _voiceState != _VoiceState.speaking)) {
+      return;
+    }
+
+    setState(() {
+      _finalUserTranscript = '';
+      _liveUserTranscript = '';
+      _voiceHint = '';
+    });
+    _onStateChanged(_VoiceState.speaking);
+    await Future.delayed(const Duration(milliseconds: 260));
+    if (!mounted || _voiceState != _VoiceState.speaking) return;
+
+    _textFadeCtrl.forward(from: 0.0);
+    _streamWords(
+      text,
+      onComplete: speakText
+          ? null
+          : () {
+              if (mounted && _voiceState == _VoiceState.speaking) {
+                unawaited(_settleToWaitingState());
+              }
+            },
+      targetDuration: useGeminiPlayback ? preparedSpeechDuration : null,
+      leadIn: useGeminiPlayback
+          ? const Duration(milliseconds: 40)
+          : const Duration(milliseconds: 80),
+    );
+
+    if (!speakText) return;
+
+    if (!_ttsCompletionArmed ||
+        !mounted ||
+        _mode != _AiMode.voice ||
+        _voiceState != _VoiceState.speaking) {
+      return;
+    }
+
+    if (useGeminiPlayback) {
+      try {
+        _deviceTtsActive = false;
+        await _speechPlayer.play();
+        if (mounted && _voiceState == _VoiceState.speaking) {
+          await _settleToWaitingState();
+        }
+      } catch (_) {
+        await _settleToWaitingState();
+      }
+      return;
+    }
+
+    try {
+      _deviceTtsActive = true;
+      await _tts.speak(text);
+    } catch (_) {
+      await _settleToWaitingState();
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Task 4 — Word streaming
+  // ─────────────────────────────────────────────────────────────────────────
+  List<Duration> _buildWordRevealDelays(
+    List<String> words, {
+    Duration? targetDuration,
+    Duration leadIn = const Duration(milliseconds: 80),
+  }) {
+    if (words.isEmpty) return const [];
+
+    final baseWeights = words.map((word) {
+      if (word.length <= 3) return 110;
+      if (word.length <= 6) return 160;
+      return 210;
+    }).toList();
+
+    if (targetDuration == null || targetDuration <= Duration.zero) {
+      return List<Duration>.generate(baseWeights.length, (index) {
+        final extraLeadIn = index == 0 ? leadIn.inMilliseconds : 0;
+        return Duration(milliseconds: baseWeights[index] + extraLeadIn);
+      });
+    }
+
+    final availableMs = max(
+      leadIn.inMilliseconds + 80,
+      targetDuration.inMilliseconds - 140,
+    ).toDouble();
+    final totalWeight = baseWeights.fold<double>(
+      0,
+      (sum, value) => sum + value,
+    );
+
+    return List<Duration>.generate(baseWeights.length, (index) {
+      final weightedDelay = max(
+        55.0,
+        availableMs * (baseWeights[index] / totalWeight),
+      );
+      final extraLeadIn = index == 0 ? leadIn.inMilliseconds : 0;
+      return Duration(milliseconds: weightedDelay.round() + extraLeadIn);
+    });
+  }
+
+  void _streamWords(
+    String fullText, {
+    VoidCallback? onComplete,
+    Duration? targetDuration,
+    Duration leadIn = const Duration(milliseconds: 80),
+  }) {
+    final normalizedText = fullText.trim();
+    _cancelWordStream();
+
+    if (normalizedText.isEmpty) {
+      onComplete?.call();
+      return;
+    }
+
+    _onWordStreamComplete = onComplete;
+    final words = normalizedText.split(RegExp(r'\s+'));
+    setState(() {
+      _words = words;
+      _revealedWordCount = 0;
+      _wordRevealDelays = _buildWordRevealDelays(
+        words,
+        targetDuration: targetDuration,
+        leadIn: leadIn,
+      );
+    });
+    _scheduleNextWord();
+  }
+
+  void _scheduleNextWord() {
+    if (_revealedWordCount >= _words.length) {
+      final onComplete = _onWordStreamComplete;
+      _onWordStreamComplete = null;
+      onComplete?.call();
+      return;
+    }
+
+    final delay = _revealedWordCount < _wordRevealDelays.length
+        ? _wordRevealDelays[_revealedWordCount]
+        : const Duration(milliseconds: 150);
+    _wordTimer = Timer(delay, () {
+      if (!mounted) return;
+      setState(() => _revealedWordCount++);
+      // Auto-scroll
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_responseScrollCtrl.hasClients) {
+          _responseScrollCtrl.animateTo(
+            _responseScrollCtrl.position.maxScrollExtent,
+            duration: const Duration(milliseconds: 120),
+            curve: Curves.easeOut,
+          );
+        }
+      });
+      _scheduleNextWord();
+    });
+  }
+
+  void _cancelWordStream() {
+    _wordTimer?.cancel();
+    _wordTimer = null;
+    _onWordStreamComplete = null;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Reset to idle (Tasks 4e, 5)
+  // ─────────────────────────────────────────────────────────────────────────
+  Future<void> _settleToWaitingState() async {
+    _ttsCompletionArmed = false;
+    _deviceTtsActive = false;
+    _cancelWordStream();
+    if (!mounted || _mode != _AiMode.voice) return;
+
+    setState(() {
+      _revealedWordCount = _words.length;
+      _speechListening = false;
+      _liveUserTranscript = '';
+      _finalUserTranscript = '';
+      _voiceHint = '';
+    });
+    _textFadeCtrl.forward();
+    _onStateChanged(_VoiceState.waiting);
+  }
+
+  Future<void> _setIdleState({bool clearTranscript = true}) async {
+    _nextVoiceTurnId();
+    await _cancelVoiceResponseStream();
+    await _cancelSpeechRecognition();
+    await _stopTtsPlayback();
+    await _clearSpeechAudioFiles();
+    _resetStreamingResponseState();
+    _resetVoiceReactivity();
+    if (clearTranscript) {
+      await _clearVoiceTranscript(animate: false);
+    } else {
+      _cancelWordStream();
+    }
+    if (!mounted) return;
+    setState(() {
+      _speechListening = false;
+      _speechSubmitPending = false;
+      _liveUserTranscript = '';
+      _finalUserTranscript = '';
+      _voiceHint = '';
+    });
+    _onStateChanged(_VoiceState.idle);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Task 14 — Voice mode entry
+  // ─────────────────────────────────────────────────────────────────────────
+  Future<void> _enterVoice() async {
+    HapticFeedback.mediumImpact();
+    await _resetVoiceOverlayState();
+    if (!mounted) return;
+    setState(() => _mode = _AiMode.voice);
+    await _modeCtrl.forward();
+    if (!mounted) return;
+    await Future.delayed(const Duration(milliseconds: 120));
+    if (!mounted) return;
+    await _orbEntryCtrl.forward(from: 0.0);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Task 15 — Voice mode exit
+  // ─────────────────────────────────────────────────────────────────────────
+  Future<void> _exitVoice() async {
+    await _stopTtsPlayback();
+    _cancelWordStream();
+    setState(() => _isExiting = true);
+    await _orbEntryCtrl.reverse();
+    if (!mounted) return;
+    await _modeCtrl.reverse();
+    if (!mounted) return;
+    await _resetVoiceOverlayState();
+    if (!mounted) return;
+    setState(() => _mode = _AiMode.text);
+    _orbEntryCtrl.reset();
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Orb tap handler
+  // ─────────────────────────────────────────────────────────────────────────
+  Future<void> _handleVoicePressStart() async {
+    if (_mode != _AiMode.voice || !_showControls) return;
+    HapticFeedback.mediumImpact();
+    switch (_voiceState) {
+      case _VoiceState.idle:
+      case _VoiceState.waiting:
+      case _VoiceState.speaking:
+        await _startListeningTurn();
+        break;
+      case _VoiceState.listening:
+        break;
+      case _VoiceState.thinking:
+        await _setIdleState(clearTranscript: false);
+        await _startListeningTurn();
+        break;
+    }
+  }
+
+  Future<void> _handleVoicePressEnd() async {
+    if (_mode != _AiMode.voice) return;
+    if (_voiceState == _VoiceState.listening) {
+      HapticFeedback.selectionClick();
+      await _finishListeningTurn();
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Text mode messaging
+  // ─────────────────────────────────────────────────────────────────────────
+  void _sendMessage(String text) {
+    if (text.trim().isEmpty) return;
+    if (_isOffline) return;
+    final userText = text.trim();
+    setState(() {
+      _messages.add(_Msg(text: userText, isUser: true));
+      _isTyping = true;
+    });
+    _scrollToBottom();
+
+    _geminiService
+        .chatAboutArtifact(
+          widget.artifact ?? GeminiService.museumGuideArtifact,
+          userText,
+          List.from(_conversationHistory),
+        )
+        .then((response) async {
+          if (!mounted) return;
+          _conversationHistory.add({'role': 'user', 'content': userText});
+          _conversationHistory.add({'role': 'model', 'content': response});
+          if (_conversationHistory.length > 20) {
+            _conversationHistory.removeRange(0, 2);
+          }
+          final displayText = await _translationService.translate(response);
+          if (!mounted) return;
+          setState(() {
+            _isTyping = false;
+            _messages.add(_Msg(text: displayText, isUser: false));
+          });
+          _scrollToBottom();
+        });
+  }
+
+  List<String> _buildSuggestions() {
+    final artifact = widget.artifact;
+    if (artifact == null) {
+      return const [
+        'What can I explore here?',
+        'Tell me about Chewa culture',
+        'Start a guided tour',
+        'What are the featured artifacts?',
+        'Explain Nyau traditions',
+      ];
+    }
+    final category = artifact.category?.toUpperCase() ?? '';
+    if (category.contains('MUSICAL')) {
+      return [
+        'How was the ${artifact.name} played?',
+        'What ceremonies used this instrument?',
+        'Tell me about its materials',
+        'When was this piece created?',
+        'How does it connect to Chewa spirituality?',
+      ];
+    }
+    if (category.contains('WEAPON') || category.contains('TOOL')) {
+      return [
+        'Who used the ${artifact.name}?',
+        'How was it made?',
+        'What was its purpose in ceremonies?',
+        'Tell me about its period: ${artifact.period ?? 'unknown'}',
+        'How does it compare to modern equivalents?',
+      ];
+    }
+    if (category.contains('POTTERY') || category.contains('CERAMIC')) {
+      return [
+        'How was this pottery made?',
+        'What was it used for?',
+        'Tell me about the patterns and symbols',
+        'Who made vessels like this?',
+        'What does it reveal about daily life?',
+      ];
+    }
+    return [
+      'Tell me about the ${artifact.name}',
+      'What ceremonies used this artifact?',
+      'When was this piece created?',
+      'What cultural significance does it hold?',
+      'Tell me more about ${artifact.period ?? 'this period'}',
+    ];
   }
 
   void _scrollToBottom() {
@@ -233,6 +1863,83 @@ class _AiGuideScreenState extends State<AiGuideScreen>
     });
   }
 
+  Future<void> _showTourSelector() async {
+    final tours = await _supabaseService.getActiveTours();
+    if (!mounted) return;
+    if (tours.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No active tours available.')),
+      );
+      return;
+    }
+    if (tours.length == 1) {
+      await _loadTour(tours.first);
+      return;
+    }
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: AppColors.surfaceCard,
+      showDragHandle: true,
+      builder: (_) => Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Padding(
+            padding: EdgeInsets.fromLTRB(16, 0, 16, 12),
+            child: Text(
+              'Select a Tour',
+              style: TextStyle(
+                color: AppColors.textMain,
+                fontSize: 16,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+          for (final tour in tours)
+            ListTile(
+              leading: const Icon(Icons.route, color: AppColors.primary),
+              title: Text(
+                tour['name'] as String? ?? '',
+                style: const TextStyle(
+                  color: AppColors.textMain,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              subtitle: Text(
+                '${tour['duration_minutes']} min  •  ${tour['difficulty']}',
+                style: const TextStyle(
+                  color: AppColors.textMuted,
+                  fontSize: 12,
+                ),
+              ),
+              onTap: () {
+                Navigator.pop(context);
+                _loadTour(tour);
+              },
+            ),
+          const SizedBox(height: 16),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _loadTour(Map<String, dynamic> tour) async {
+    final stops = await _supabaseService.getTourStops(tour['id'] as String);
+    if (!mounted) return;
+    setState(() {
+      _tourMode = true;
+      _tourStops = stops;
+      _currentTourStopIndex = 0;
+      _currentTourName = tour['name'] as String? ?? '';
+    });
+    if (stops.isNotEmpty) {
+      final narration = stops.first['narration'] as String? ?? '';
+      if (narration.isNotEmpty) {
+        _sendMessage('Starting tour: $narration');
+      }
+    }
+  }
+
   // ─────────────────────────────────────────────────────────────────────────
   // Build
   // ─────────────────────────────────────────────────────────────────────────
@@ -244,28 +1951,82 @@ class _AiGuideScreenState extends State<AiGuideScreen>
         children: [
           _buildTextMode(),
           if (_mode == _AiMode.voice)
-            FadeTransition(
-              opacity: _modeFade,
-              child: _buildVoiceMode(),
-            ),
+            FadeTransition(opacity: _modeFade, child: _buildVoiceMode()),
         ],
       ),
     );
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
+  // ═════════════════════════════════════════════════════════════════════════
   // TEXT MODE
-  // ─────────────────────────────────────────────────────────────────────────
+  // ═════════════════════════════════════════════════════════════════════════
   Widget _buildTextMode() {
     return Column(
       children: [
         _buildTopBar(),
+        if (_isOffline) _buildOfflineBanner(),
         if (_tourMode) _buildTourBanner(),
-        Expanded(
-          child: _messages.isEmpty ? _buildEmptyState() : _buildChat(),
+        Expanded(child: _messages.isEmpty ? _buildEmptyState() : _buildChat()),
+        _Composer(
+          onSend: _isOffline ? (_) {} : _sendMessage,
+          onVoiceTap: _enterVoice,
+          languageState: GetIt.instance<LanguageState>(),
+          disabled: _isOffline,
         ),
-        _buildComposer(),
       ],
+    );
+  }
+
+  Widget _buildOfflineBanner() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      color: const Color(0xFFFFF3CD),
+      child: const Row(
+        children: [
+          Icon(Icons.wifi_off, size: 14, color: Color(0xFF856404)),
+          SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Offline Mode — AI guide requires internet. Viewing cached content.',
+              style: TextStyle(
+                color: Color(0xFF856404),
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildShimmerThinking() {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 22,
+              height: 22,
+              decoration: BoxDecoration(
+                color: AppColors.primary.withValues(alpha: 0.14),
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(
+                Icons.auto_awesome,
+                color: AppColors.primary,
+                size: 12,
+              ),
+            ),
+            const SizedBox(width: 8),
+            const _ShimmerText('Thinking…'),
+          ],
+        ),
+      ),
     );
   }
 
@@ -286,8 +2047,11 @@ class _AiGuideScreenState extends State<AiGuideScreen>
                   borderRadius: BorderRadius.circular(12),
                   border: Border.all(color: AppColors.surfaceBorder),
                 ),
-                child: const Icon(Icons.arrow_back_ios_new,
-                    color: AppColors.textMuted, size: 16),
+                child: const Icon(
+                  Icons.arrow_back_ios_new,
+                  color: AppColors.textMuted,
+                  size: 16,
+                ),
               ),
             ),
             const SizedBox(width: 10),
@@ -301,9 +2065,19 @@ class _AiGuideScreenState extends State<AiGuideScreen>
                 ),
               ),
             ),
-            // Tour toggle
             GestureDetector(
-              onTap: () => setState(() => _tourMode = !_tourMode),
+              onTap: () {
+                if (_tourMode) {
+                  setState(() {
+                    _tourMode = false;
+                    _tourStops = [];
+                    _currentTourStopIndex = 0;
+                    _currentTourName = '';
+                  });
+                } else {
+                  _showTourSelector();
+                }
+              },
               child: Container(
                 width: 36,
                 height: 36,
@@ -326,7 +2100,6 @@ class _AiGuideScreenState extends State<AiGuideScreen>
               ),
             ),
             const SizedBox(width: 6),
-            // History
             GestureDetector(
               onTap: _openTranscript,
               child: Container(
@@ -337,8 +2110,11 @@ class _AiGuideScreenState extends State<AiGuideScreen>
                   borderRadius: BorderRadius.circular(12),
                   border: Border.all(color: AppColors.surfaceBorder),
                 ),
-                child: const Icon(Icons.history,
-                    color: AppColors.textMuted, size: 18),
+                child: const Icon(
+                  Icons.history,
+                  color: AppColors.textMuted,
+                  size: 18,
+                ),
               ),
             ),
           ],
@@ -348,6 +2124,14 @@ class _AiGuideScreenState extends State<AiGuideScreen>
   }
 
   Widget _buildTourBanner() {
+    final hasStops = _tourStops.isNotEmpty;
+    final stepLabel = hasStops
+        ? 'Tour Mode  •  Step ${_currentTourStopIndex + 1} of ${_tourStops.length}'
+        : 'Tour Mode  •  Loading…';
+    final stopLabel = hasStops
+        ? (_tourStops[_currentTourStopIndex]['artifact_id'] as String? ?? '')
+        : _currentTourName;
+
     return Container(
       margin: const EdgeInsets.fromLTRB(16, 8, 16, 0),
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
@@ -358,35 +2142,36 @@ class _AiGuideScreenState extends State<AiGuideScreen>
       ),
       child: Row(
         children: [
-          Icon(Icons.route, color: AppColors.primary, size: 16),
+          const Icon(Icons.route, color: AppColors.primary, size: 16),
           const SizedBox(width: 8),
-          const Expanded(
+          Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Tour Mode  •  Step 2 of 8',
-                  style: TextStyle(
+                  stepLabel,
+                  style: const TextStyle(
                     color: AppColors.primary,
                     fontSize: 12,
                     fontWeight: FontWeight.w700,
                   ),
                 ),
                 Text(
-                  'Hall of Ancestors',
-                  style: TextStyle(color: AppColors.textMuted, fontSize: 11),
+                  stopLabel,
+                  style: const TextStyle(
+                    color: AppColors.textMuted,
+                    fontSize: 11,
+                  ),
                 ),
               ],
             ),
           ),
           GestureDetector(
             onTap: () => Navigator.of(context).push(
-              MaterialPageRoute(
-                  builder: (_) => const IndoorNavigationScreen()),
+              MaterialPageRoute(builder: (_) => const IndoorNavigationScreen()),
             ),
             child: Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
               decoration: BoxDecoration(
                 color: AppColors.primary,
                 borderRadius: BorderRadius.circular(10),
@@ -415,11 +2200,7 @@ class _AiGuideScreenState extends State<AiGuideScreen>
           RichText(
             textAlign: TextAlign.center,
             text: const TextSpan(
-              style: TextStyle(
-                fontSize: 30,
-                letterSpacing: -0.5,
-                height: 1.2,
-              ),
+              style: TextStyle(fontSize: 30, letterSpacing: -0.5, height: 1.2),
               children: [
                 TextSpan(
                   text: 'mtengatenga\n',
@@ -463,11 +2244,11 @@ class _AiGuideScreenState extends State<AiGuideScreen>
           Wrap(
             spacing: 8,
             runSpacing: 8,
-            children: _Mock.suggestions
-                .map((s) => _SuggestionChip(
-                      label: s,
-                      onTap: () => _sendMessage(s),
-                    ))
+            children: _buildSuggestions()
+                .map(
+                  (s) =>
+                      _SuggestionChip(label: s, onTap: () => _sendMessage(s)),
+                )
                 .toList(),
           ),
           const SizedBox(height: 20),
@@ -477,11 +2258,15 @@ class _AiGuideScreenState extends State<AiGuideScreen>
   }
 
   Widget _buildChat() {
+    final itemCount = _messages.length + (_isTyping ? 1 : 0);
     return ListView.builder(
       controller: _scrollCtrl,
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-      itemCount: _messages.length,
+      itemCount: itemCount,
       itemBuilder: (_, i) {
+        if (i == _messages.length && _isTyping) {
+          return _buildShimmerThinking();
+        }
         final m = _messages[i];
         return m.isUser ? _buildUserBubble(m) : _buildAiBubble(m);
       },
@@ -497,8 +2282,7 @@ class _AiGuideScreenState extends State<AiGuideScreen>
           constraints: BoxConstraints(
             maxWidth: MediaQuery.of(context).size.width * 0.78,
           ),
-          padding:
-              const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
           decoration: BoxDecoration(
             color: AppColors.surfaceCard,
             borderRadius: const BorderRadius.only(
@@ -512,7 +2296,10 @@ class _AiGuideScreenState extends State<AiGuideScreen>
           child: Text(
             m.text,
             style: const TextStyle(
-                color: AppColors.textMain, fontSize: 15, height: 1.45),
+              color: AppColors.textMain,
+              fontSize: 15,
+              height: 1.45,
+            ),
           ),
         ),
       ),
@@ -534,8 +2321,11 @@ class _AiGuideScreenState extends State<AiGuideScreen>
                   color: AppColors.primary.withValues(alpha: 0.14),
                   shape: BoxShape.circle,
                 ),
-                child: Icon(Icons.auto_awesome,
-                    color: AppColors.primary, size: 12),
+                child: const Icon(
+                  Icons.auto_awesome,
+                  color: AppColors.primary,
+                  size: 12,
+                ),
               ),
               const SizedBox(width: 6),
               const Text(
@@ -552,205 +2342,16 @@ class _AiGuideScreenState extends State<AiGuideScreen>
           Text(
             m.text,
             style: const TextStyle(
-                color: AppColors.textMuted, fontSize: 16, height: 1.6),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildComposer() {
-    return _Composer(onSend: _sendMessage, onVoiceTap: _enterVoice);
-  }
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // VOICE MODE
-  // ─────────────────────────────────────────────────────────────────────────
-  Widget _buildVoiceMode() {
-    return Scaffold(
-      backgroundColor: Colors.black,
-      body: Stack(
-        children: [
-          _voiceBg(),
-          _voiceSphere(),
-          if (_voiceText.isNotEmpty) _voiceResponseText(),
-          _voiceTopBar(),
-          _voiceBottomBar(),
-        ],
-      ),
-    );
-  }
-
-  Widget _voiceBg() {
-    final center =
-        (_voiceState == _VoiceState.listening ||
-                _voiceState == _VoiceState.thinking)
-            ? const Color(0xFF001A26)
-            : const Color(0xFF3A1F00);
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 700),
-      decoration: BoxDecoration(
-        gradient: RadialGradient(
-          center: Alignment.bottomCenter,
-          radius: 1.3,
-          colors: [center, Colors.black],
-          stops: const [0.0, 0.72],
-        ),
-      ),
-    );
-  }
-
-  Widget _voiceSphere() {
-    final hasText = _voiceText.isNotEmpty;
-    final size = hasText ? 66.0 : 230.0;
-    final align = hasText ? Alignment.bottomCenter : Alignment.center;
-    final pad =
-        hasText ? const EdgeInsets.only(bottom: 112) : EdgeInsets.zero;
-
-    return AnimatedAlign(
-      duration: const Duration(milliseconds: 550),
-      curve: Curves.easeInOut,
-      alignment: align,
-      child: Padding(
-        padding: pad,
-        child: AnimatedBuilder(
-          animation: Listenable.merge([_sphereCtrl, _pulseAnim]),
-          builder: (_, __) {
-            final scale = _voiceState == _VoiceState.speaking
-                ? _pulseAnim.value
-                : 1.0;
-            return Transform.scale(
-              scale: scale,
-              child: SizedBox(
-                width: size,
-                height: size,
-                child: CustomPaint(
-                  painter: _SpherePainter(
-                    progress: _sphereCtrl.value,
-                    state: _voiceState,
-                  ),
-                ),
-              ),
-            );
-          },
-        ),
-      ),
-    );
-  }
-
-  Widget _voiceResponseText() {
-    return Positioned(
-      top: 88,
-      left: 26,
-      right: 26,
-      bottom: 180,
-      child: FadeTransition(
-        opacity: _textOpacity,
-        child: SingleChildScrollView(
-          child: Text(
-            _voiceText,
-            style: const TextStyle(
-              color: Color(0xFFCCCCCC),
-              fontSize: 29,
-              height: 1.38,
-              fontWeight: FontWeight.w300,
-              letterSpacing: -0.4,
+              color: AppColors.textMuted,
+              fontSize: 16,
+              height: 1.6,
             ),
           ),
-        ),
+        ],
       ),
     );
   }
 
-  Widget _voiceTopBar() {
-    return Positioned(
-      top: 0,
-      left: 0,
-      right: 0,
-      child: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.end,
-            children: [
-              IconButton(
-                icon: const Icon(Icons.settings_outlined,
-                    color: Color(0xFF888888), size: 22),
-                onPressed: () {},
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _voiceBottomBar() {
-    return Positioned(
-      bottom: 0,
-      left: 0,
-      right: 0,
-      child: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(24, 8, 24, 28),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              AnimatedOpacity(
-                opacity: _voiceText.isEmpty ? 1.0 : 0.0,
-                duration: const Duration(milliseconds: 250),
-                child: Text(
-                  switch (_voiceState) {
-                    _VoiceState.listening => 'Listening...',
-                    _VoiceState.thinking => 'Thinking...',
-                    _ => 'Say something...',
-                  },
-                  style: const TextStyle(
-                    color: Color(0xFF888888),
-                    fontSize: 15,
-                  ),
-                ),
-              ),
-              const SizedBox(height: 22),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  _OrbBtn(icon: Icons.close, onTap: _exitVoice),
-                  GestureDetector(
-                    onTap: _handleOrbTap,
-                    child: AnimatedBuilder(
-                      animation: _sphereCtrl,
-                      builder: (_, __) => SizedBox(
-                        width: 72,
-                        height: 72,
-                        child: CustomPaint(
-                          painter: _SpherePainter(
-                            progress: _sphereCtrl.value,
-                            state: _voiceState,
-                            dense: true,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                  _OrbBtn(
-                    icon: _voiceState == _VoiceState.idle
-                        ? Icons.mic_none_outlined
-                        : Icons.keyboard_alt_outlined,
-                    onTap: () {},
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // Transcript bottom sheet
-  // ─────────────────────────────────────────────────────────────────────────
   void _openTranscript() {
     showModalBottomSheet<void>(
       context: context,
@@ -788,22 +2389,24 @@ class _AiGuideScreenState extends State<AiGuideScreen>
           Expanded(
             child: _messages.isEmpty
                 ? const Center(
-                    child: Text('No messages yet.',
-                        style: TextStyle(color: AppColors.textMuted)),
+                    child: Text(
+                      'No messages yet.',
+                      style: TextStyle(color: AppColors.textMuted),
+                    ),
                   )
                 : ListView.separated(
                     padding: const EdgeInsets.symmetric(horizontal: 16),
                     itemCount: _messages.length,
                     separatorBuilder: (_, __) => const Divider(
-                        color: AppColors.surfaceBorder, height: 1),
+                      color: AppColors.surfaceBorder,
+                      height: 1,
+                    ),
                     itemBuilder: (_, i) {
                       final m = _messages[i];
                       return ListTile(
                         contentPadding: EdgeInsets.zero,
                         leading: Icon(
-                          m.isUser
-                              ? Icons.person_outline
-                              : Icons.auto_awesome,
+                          m.isUser ? Icons.person_outline : Icons.auto_awesome,
                           color: m.isUser
                               ? AppColors.textMuted
                               : AppColors.primary,
@@ -814,13 +2417,486 @@ class _AiGuideScreenState extends State<AiGuideScreen>
                           maxLines: 2,
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
-                              color: AppColors.textMuted, fontSize: 14),
+                            color: AppColors.textMuted,
+                            fontSize: 14,
+                          ),
                         ),
                       );
                     },
                   ),
           ),
         ],
+      ),
+    );
+  }
+
+  // ═════════════════════════════════════════════════════════════════════════
+  // VOICE MODE
+  // ═════════════════════════════════════════════════════════════════════════
+  Widget _buildVoiceMode() {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: Stack(
+        children: [
+          _voiceBg(),
+          _voiceSphereArea(),
+          if (_showTranscript) _voiceResponseText(),
+          _voiceTopBar(),
+          _voiceIndicators(),
+          _voiceBottomBar(),
+        ],
+      ),
+    );
+  }
+
+  // Task 8 — Enhanced background gradient
+  Widget _voiceBg() {
+    final spec = _voiceBackdropFor(_voiceState);
+    final duration = switch (_voiceState) {
+      _VoiceState.thinking => const Duration(milliseconds: 920),
+      _VoiceState.speaking => const Duration(milliseconds: 640),
+      _VoiceState.waiting => const Duration(milliseconds: 820),
+      _VoiceState.listening => const Duration(milliseconds: 520),
+      _VoiceState.idle => const Duration(milliseconds: 700),
+    };
+    final curve = switch (_voiceState) {
+      _VoiceState.thinking => Curves.easeInOutCubicEmphasized,
+      _VoiceState.speaking => Curves.easeOutCubic,
+      _ => Curves.easeInOutCubic,
+    };
+
+    return Positioned.fill(
+      child: AnimatedContainer(
+        duration: duration,
+        curve: curve,
+        decoration: BoxDecoration(
+          gradient: RadialGradient(
+            center: spec.center,
+            radius: spec.radius,
+            colors: [spec.innerColor, spec.midColor, spec.outerColor],
+            stops: const [0.0, 0.46, 1.0],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // Tasks 2, 9c, 14, 15 — Single animated orb layer
+  Widget _voiceSphereArea() {
+    final bottomInset = MediaQuery.paddingOf(context).bottom;
+    final orbSize = _showMiniOrb ? 76.0 : 228.0;
+    final layerSize = _showMiniOrb ? 96.0 : orbSize * 2.2;
+    final orbPadding = EdgeInsets.only(
+      bottom: _showMiniOrb ? bottomInset + 24 : 0,
+    );
+
+    return AnimatedAlign(
+      duration: const Duration(milliseconds: 560),
+      curve: Curves.easeInOutCubic,
+      alignment: _showMiniOrb ? Alignment.bottomCenter : Alignment.center,
+      child: AnimatedPadding(
+        duration: const Duration(milliseconds: 560),
+        curve: Curves.easeInOutCubic,
+        padding: orbPadding,
+        child: Listener(
+          behavior: HitTestBehavior.translucent,
+          onPointerDown: _showControls
+              ? (_) => unawaited(_handleVoicePressStart())
+              : null,
+          onPointerUp: _showControls
+              ? (_) => unawaited(_handleVoicePressEnd())
+              : null,
+          onPointerCancel: _showControls
+              ? (_) => unawaited(_handleVoicePressEnd())
+              : null,
+          child: SizedBox(
+            width: layerSize,
+            height: layerSize,
+            child: Center(
+              child: AnimatedBuilder(
+                animation: Listenable.merge([
+                  _sphereCtrl,
+                  _breathCtrl,
+                  _timeCtrl,
+                  _stateTransitionCtrl,
+                  _thinkCtrl,
+                  _orbEntryCtrl,
+                ]),
+                builder: (_, __) {
+                  final particles = _showMiniOrb
+                      ? _miniOrbParticles
+                      : _mainOrbParticles;
+                  final breathScale = switch (_voiceState) {
+                    _VoiceState.idle => 0.98 + 0.010 * _breathCtrl.value,
+                    _VoiceState.listening => 0.98 + 0.012 * _breathCtrl.value,
+                    _VoiceState.thinking => 0.98 + 0.010 * _breathCtrl.value,
+                    _VoiceState.speaking => 0.94 + 0.012 * _breathCtrl.value,
+                    _VoiceState.waiting => 0.98 + 0.010 * _breathCtrl.value,
+                  };
+
+                  return Stack(
+                    alignment: Alignment.center,
+                    clipBehavior: Clip.none,
+                    children: [
+                      if (_voiceState == _VoiceState.listening &&
+                          _showCenterOrb)
+                        CustomPaint(
+                          painter: _PulseRingPainter(
+                            rings: List<_PulseRing>.from(_pulseRings),
+                            elapsed: _elapsedSeconds,
+                            maxRadius: orbSize / 2,
+                            color: const Color(0xFFD2874B),
+                          ),
+                          size: Size(layerSize, layerSize),
+                        ),
+                      Transform.scale(
+                        scale: _orbEntryScale.value,
+                        child: Opacity(
+                          opacity: _orbEntryOpacity.value.clamp(0.0, 1.0),
+                          child: RepaintBoundary(
+                            child: SizedBox(
+                              width: orbSize,
+                              height: orbSize,
+                              child: CustomPaint(
+                                painter: _SpherePainter(
+                                  progress: _sphereCtrl.value,
+                                  state: _voiceState,
+                                  particles: particles,
+                                  dense: _showMiniOrb,
+                                  amplitude: _cachedAmplitude,
+                                  elapsed: _elapsedSeconds,
+                                  breathScale: breathScale,
+                                  stateBlend: _coolTransitionBlend,
+                                  thinkingContraction: _thinkCtrl.value,
+                                  beatStrength: _beatStrength,
+                                  entryProgress: _orbEntryCtrl.value,
+                                  isExiting: _isExiting,
+                                  idleTiltX: 0.0,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  );
+                },
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // Task 18 — Scrollable response text with fade mask
+  Widget _voiceResponseText() {
+    return Positioned(
+      top: 84,
+      left: 28,
+      right: 28,
+      bottom: 208,
+      child: FadeTransition(
+        opacity: _textOpacity,
+        child: ShaderMask(
+          shaderCallback: (Rect bounds) {
+            return const LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [Colors.white, Colors.white, Colors.transparent],
+              stops: [0.0, 0.82, 1.0],
+            ).createShader(bounds);
+          },
+          blendMode: BlendMode.dstIn,
+          child: SingleChildScrollView(
+            controller: _responseScrollCtrl,
+            physics: const BouncingScrollPhysics(),
+            child: Padding(
+              padding: const EdgeInsets.only(bottom: 32),
+              child: _buildStreamingText(),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // Task 4b — Word-by-word RichText renderer
+  Widget _buildStreamingText() {
+    if (_words.isEmpty) return const SizedBox.shrink();
+    final isComplete = _revealedWordCount >= _words.length;
+    final spans = <InlineSpan>[];
+    for (int i = 0; i < _revealedWordCount; i++) {
+      final word = _words[i];
+      final isLastActive = i == _revealedWordCount - 1 && !isComplete;
+      spans.add(
+        TextSpan(
+          text: '$word ',
+          style: TextStyle(
+            fontSize: isLastActive ? 32 : 31,
+            fontWeight: isLastActive ? FontWeight.w600 : FontWeight.w300,
+            color: isLastActive ? Colors.white : const Color(0xFFA0A0A5),
+            height: 1.24,
+            letterSpacing: -0.35,
+          ),
+        ),
+      );
+    }
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 80),
+      transitionBuilder: (child, anim) =>
+          FadeTransition(opacity: anim, child: child),
+      child: KeyedSubtree(
+        key: ValueKey(_revealedWordCount),
+        child: RichText(
+          textAlign: TextAlign.left,
+          text: TextSpan(children: spans),
+        ),
+      ),
+    );
+  }
+
+  // Task 19 — Settings icon (frosted pill, fades during speaking)
+  Widget _voiceTopBar() {
+    return Positioned(
+      top: 0,
+      right: 0,
+      child: SafeArea(
+        child: AnimatedOpacity(
+          duration: const Duration(milliseconds: 400),
+          opacity: switch (_voiceState) {
+            _VoiceState.speaking => 0.16,
+            _VoiceState.waiting => 0.36,
+            _VoiceState.thinking => 0.58,
+            _ => 0.78,
+          },
+          child: Padding(
+            padding: const EdgeInsets.only(top: 8, right: 16),
+            child: GestureDetector(
+              onTap: () {},
+              child: Container(
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(
+                    color: Colors.white.withValues(alpha: 0.10),
+                    width: 0.8,
+                  ),
+                ),
+                child: Icon(
+                  Icons.settings_outlined,
+                  size: 18,
+                  color: Colors.white.withValues(alpha: 0.70),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // Tasks 7, 13, 17 — Waveform / dots / status label
+  Widget _voiceIndicators() {
+    return Positioned(
+      bottom: 168,
+      left: 0,
+      right: 0,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          AnimatedSwitcher(
+            duration: const Duration(milliseconds: 220),
+            child: _showUserTranscript
+                ? Container(
+                    key: ValueKey(
+                      'user-transcript-${_displayUserTranscript}_$_voiceHint',
+                    ),
+                    constraints: const BoxConstraints(maxWidth: 320),
+                    padding: const EdgeInsets.symmetric(horizontal: 28),
+                    child: Text(
+                      _displayUserTranscript.isNotEmpty
+                          ? _displayUserTranscript
+                          : _voiceHint,
+                      textAlign: TextAlign.center,
+                      maxLines: 4,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.w300,
+                        color: Colors.white.withValues(alpha: 0.76),
+                        height: 1.28,
+                        letterSpacing: -0.2,
+                      ),
+                    ),
+                  )
+                : const SizedBox.shrink(key: ValueKey('user-transcript-empty')),
+          ),
+          if (_showUserTranscript) const SizedBox(height: 18),
+          AnimatedSwitcher(
+            duration: const Duration(milliseconds: 350),
+            transitionBuilder: (child, anim) =>
+                FadeTransition(opacity: anim, child: child),
+            child: switch (_voiceState) {
+              _VoiceState.listening => KeyedSubtree(
+                key: const ValueKey('wave'),
+                child: _buildMicWaveform(),
+              ),
+              _VoiceState.thinking when _thinkingDotsVisible => KeyedSubtree(
+                key: const ValueKey('dots'),
+                child: _buildThinkingDots(),
+              ),
+              _ => const SizedBox(height: 28, key: ValueKey('empty')),
+            },
+          ),
+          const SizedBox(height: 10),
+          AnimatedSwitcher(
+            duration: const Duration(milliseconds: 300),
+            transitionBuilder: (child, anim) =>
+                FadeTransition(opacity: anim, child: child),
+            child: _voiceStatusText.isEmpty
+                ? const SizedBox(height: 20, key: ValueKey('status-empty'))
+                : Text(
+                    _voiceStatusText,
+                    key: ValueKey(_voiceStatusText),
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w300,
+                      color: Colors.white.withValues(alpha: 0.52),
+                      letterSpacing: 0.25,
+                    ),
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Task 13 — 5-bar mic waveform
+  Widget _buildMicWaveform() {
+    return AnimatedBuilder(
+      animation: _timeCtrl,
+      builder: (_, __) {
+        final t = _timeCtrl.value * 60.0;
+        final scale = _cachedAmplitude.clamp(0.3, 1.0);
+        final h1 = 6.0 + (10.0 * scale) * ((sin(t * 8.0 + 0.0) + 1) / 2);
+        final h2 = 6.0 + (14.0 * scale) * ((sin(t * 9.3 + 1.0) + 1) / 2);
+        final h3 = 6.0 + (14.0 * scale) * ((sin(t * 7.6 + 2.1) + 1) / 2);
+        final h4 = 6.0 + (12.0 * scale) * ((sin(t * 10.1 + 3.2) + 1) / 2);
+        final h5 = 6.0 + (10.0 * scale) * ((sin(t * 8.7 + 4.0) + 1) / 2);
+        return SizedBox(
+          width: 35,
+          height: 28,
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              _bar(h1, 3.0),
+              const SizedBox(width: 5),
+              _bar(h2, 3.0),
+              const SizedBox(width: 5),
+              _bar(h3, 3.0),
+              const SizedBox(width: 5),
+              _bar(h4, 3.0),
+              const SizedBox(width: 5),
+              _bar(h5, 3.0),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _bar(double h, double w) => Container(
+    width: w,
+    height: h.clamp(4.0, 28.0),
+    decoration: BoxDecoration(
+      color: const Color(0xFFD2874B).withValues(alpha: 0.85),
+      borderRadius: BorderRadius.circular(w / 2),
+    ),
+  );
+
+  // Task 17 — 3-dot thinking indicator
+  Widget _buildThinkingDots() {
+    return AnimatedBuilder(
+      animation: _timeCtrl,
+      builder: (_, __) {
+        final t = _timeCtrl.value * 60.0;
+        final d1 = (sin(t * 4.0 + 0.0) + 1) / 2;
+        final d2 = (sin(t * 4.0 + 1.2) + 1) / 2;
+        final d3 = (sin(t * 4.0 + 2.4) + 1) / 2;
+        return Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _thinkDot(d1),
+            const SizedBox(width: 8),
+            _thinkDot(d2),
+            const SizedBox(width: 8),
+            _thinkDot(d3),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _thinkDot(double phase) {
+    final s = 5.0 + phase * 4.0;
+    final op = 0.25 + phase * 0.65;
+    final dy = -phase * 5.0;
+    return Transform.translate(
+      offset: Offset(0, dy),
+      child: Container(
+        width: s,
+        height: s,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: const Color(0xFF00AACC).withValues(alpha: op),
+        ),
+      ),
+    );
+  }
+
+  // Task 5 — Bottom bar (buttons fade during speaking)
+  Widget _voiceBottomBar() {
+    if (!_showControls) return const SizedBox.shrink();
+
+    final buttonOpacity = switch (_voiceState) {
+      _VoiceState.speaking => 0.18,
+      _VoiceState.waiting => 0.42,
+      _ => 1.0,
+    };
+
+    return Positioned(
+      bottom: 0,
+      left: 0,
+      right: 0,
+      child: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(24, 8, 24, 28),
+          child: Row(
+            children: [
+              AnimatedOpacity(
+                duration: const Duration(milliseconds: 350),
+                opacity: buttonOpacity,
+                child: _OrbBtn(icon: Icons.close, onTap: _exitVoice),
+              ),
+              const Spacer(),
+              const SizedBox(width: 76, height: 76),
+              const Spacer(),
+              AnimatedOpacity(
+                duration: const Duration(milliseconds: 350),
+                opacity: buttonOpacity,
+                child: _HoldOrbBtn(
+                  icon: Icons.mic_none_rounded,
+                  onPressStart: () => unawaited(_handleVoicePressStart()),
+                  onPressEnd: () => unawaited(_handleVoicePressEnd()),
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -866,13 +2942,80 @@ class _SuggestionChip extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Text composer (light)
+// Text composer (light theme)
 // ─────────────────────────────────────────────────────────────────────────────
-class _Composer extends StatefulWidget {
-  const _Composer({required this.onSend, required this.onVoiceTap});
+class _ShimmerText extends StatefulWidget {
+  const _ShimmerText(this.text);
+  final String text;
 
+  @override
+  State<_ShimmerText> createState() => _ShimmerTextState();
+}
+
+class _ShimmerTextState extends State<_ShimmerText>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1500),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _ctrl,
+      builder: (context, child) {
+        return ShaderMask(
+          shaderCallback: (bounds) {
+            return LinearGradient(
+              begin: Alignment(-1.0 + 3.0 * _ctrl.value, 0),
+              end: Alignment(-1.0 + 3.0 * _ctrl.value + 1.0, 0),
+              colors: const [
+                AppColors.textMuted,
+                AppColors.primary,
+                AppColors.textMuted,
+              ],
+              stops: const [0.0, 0.5, 1.0],
+            ).createShader(bounds);
+          },
+          blendMode: BlendMode.srcIn,
+          child: child!,
+        );
+      },
+      child: Text(
+        widget.text,
+        style: const TextStyle(
+          fontSize: 13,
+          fontStyle: FontStyle.italic,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    );
+  }
+}
+
+class _Composer extends StatefulWidget {
+  const _Composer({
+    required this.onSend,
+    required this.onVoiceTap,
+    required this.languageState,
+    this.disabled = false,
+  });
   final ValueChanged<String> onSend;
   final VoidCallback onVoiceTap;
+  final LanguageState languageState;
+  final bool disabled;
 
   @override
   State<_Composer> createState() => _ComposerState();
@@ -926,15 +3069,19 @@ class _ComposerState extends State<_Composer> {
           children: [
             TextField(
               controller: _ctrl,
-              style: const TextStyle(
-                  color: AppColors.textMain, fontSize: 15),
+              enabled: !widget.disabled,
+              style: const TextStyle(color: AppColors.textMain, fontSize: 15),
               maxLines: 5,
               minLines: 1,
               onSubmitted: (_) => _submit(),
-              decoration: const InputDecoration(
-                hintText: 'Ask anything...',
-                hintStyle:
-                    TextStyle(color: AppColors.textMuted, fontSize: 15),
+              decoration: InputDecoration(
+                hintText: widget.disabled
+                    ? 'AI guide requires internet connection'
+                    : 'Ask anything...',
+                hintStyle: const TextStyle(
+                  color: AppColors.textMuted,
+                  fontSize: 15,
+                ),
                 border: InputBorder.none,
                 isDense: true,
                 contentPadding: EdgeInsets.zero,
@@ -943,29 +3090,70 @@ class _ComposerState extends State<_Composer> {
             const SizedBox(height: 10),
             Row(
               children: [
-                // Attach placeholder
-                const Icon(Icons.add,
-                    color: AppColors.textMuted, size: 22),
+                ValueListenableBuilder<String>(
+                  valueListenable: widget.languageState,
+                  builder: (context, lang, _) {
+                    final isEn = lang == 'en';
+                    return GestureDetector(
+                      onTap: () => widget.languageState.setLanguage(isEn ? 'ny' : 'en'),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: AppColors.primary.withValues(alpha: 0.08),
+                          borderRadius: BorderRadius.circular(999),
+                          border: Border.all(color: AppColors.primary.withValues(alpha: 0.20)),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              isEn ? '\u{1F1EC}\u{1F1E7}' : '\u{1F1F2}\u{1F1FC}',
+                              style: const TextStyle(fontSize: 14),
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              isEn ? 'EN' : 'NY',
+                              style: const TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w800,
+                                color: AppColors.primary,
+                              ),
+                            ),
+                            const SizedBox(width: 2),
+                            Icon(
+                              Icons.swap_horiz,
+                              size: 14,
+                              color: AppColors.primary.withValues(alpha: 0.60),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
                 const Spacer(),
-                // Mic placeholder
-                const Icon(Icons.mic_none,
-                    color: AppColors.textMuted, size: 22),
+                const Icon(
+                  Icons.mic_none,
+                  color: AppColors.textMuted,
+                  size: 22,
+                ),
                 const SizedBox(width: 10),
-                // Voice orb — launches voice mode
                 GestureDetector(
                   onTap: widget.onVoiceTap,
                   child: Container(
                     width: 38,
                     height: 38,
-                    decoration: BoxDecoration(
+                    decoration: const BoxDecoration(
                       color: AppColors.primary,
                       shape: BoxShape.circle,
                     ),
-                    child: const Icon(Icons.graphic_eq,
-                        color: Colors.white, size: 20),
+                    child: const Icon(
+                      Icons.graphic_eq,
+                      color: Colors.white,
+                      size: 20,
+                    ),
                   ),
                 ),
-                // Send — appears when text typed
                 AnimatedSize(
                   duration: const Duration(milliseconds: 200),
                   child: _hasText
@@ -976,12 +3164,15 @@ class _ComposerState extends State<_Composer> {
                             child: Container(
                               width: 38,
                               height: 38,
-                              decoration: BoxDecoration(
+                              decoration: const BoxDecoration(
                                 color: AppColors.primary,
                                 shape: BoxShape.circle,
                               ),
-                              child: const Icon(Icons.arrow_upward,
-                                  color: Colors.white, size: 20),
+                              child: const Icon(
+                                Icons.arrow_upward,
+                                color: Colors.white,
+                                size: 20,
+                              ),
                             ),
                           ),
                         )
@@ -1009,11 +3200,50 @@ class _OrbBtn extends StatelessWidget {
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        width: 52,
-        height: 52,
-        decoration: const BoxDecoration(
-          color: Color(0xFF2A2A2A),
+        width: 56,
+        height: 56,
+        decoration: BoxDecoration(
           shape: BoxShape.circle,
+          color: Colors.white.withValues(alpha: 0.10),
+          border: Border.all(
+            color: Colors.white.withValues(alpha: 0.08),
+            width: 0.8,
+          ),
+        ),
+        child: Icon(icon, color: Colors.white, size: 22),
+      ),
+    );
+  }
+}
+
+class _HoldOrbBtn extends StatelessWidget {
+  const _HoldOrbBtn({
+    required this.icon,
+    required this.onPressStart,
+    required this.onPressEnd,
+  });
+
+  final IconData icon;
+  final VoidCallback onPressStart;
+  final VoidCallback onPressEnd;
+
+  @override
+  Widget build(BuildContext context) {
+    return Listener(
+      behavior: HitTestBehavior.opaque,
+      onPointerDown: (_) => onPressStart(),
+      onPointerUp: (_) => onPressEnd(),
+      onPointerCancel: (_) => onPressEnd(),
+      child: Container(
+        width: 56,
+        height: 56,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: Colors.white.withValues(alpha: 0.10),
+          border: Border.all(
+            color: Colors.white.withValues(alpha: 0.08),
+            width: 0.8,
+          ),
         ),
         child: Icon(icon, color: Colors.white, size: 22),
       ),
@@ -1022,71 +3252,331 @@ class _OrbBtn extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Particle sphere painter — correct Y-axis rotation so sphere faces screen
+// Task 11b — Pulse ring painter
 // ─────────────────────────────────────────────────────────────────────────────
-class _SpherePainter extends CustomPainter {
-  final double progress;
-  final _VoiceState state;
-  final bool dense;
+class _PulseRingPainter extends CustomPainter {
+  final List<_PulseRing> rings;
+  final double elapsed;
+  final double maxRadius;
+  final Color color;
 
-  const _SpherePainter({
-    required this.progress,
-    required this.state,
-    this.dense = false,
+  const _PulseRingPainter({
+    required this.rings,
+    required this.elapsed,
+    required this.maxRadius,
+    required this.color,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
-    final rng = Random(42);
     final cx = size.width / 2;
     final cy = size.height / 2;
-    final radius = size.width / 2;
-    final count = dense ? 300 : 800;
+    final paint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5;
 
-    final isCool = state == _VoiceState.listening ||
-        state == _VoiceState.thinking;
-
-    // Warm palette (idle / speaking) — AppColors.primary orange
-    const sphereWarm = Color(0xFFC05621);
-    const sphereWarmBright = Color(0xFFFFCB8A);
-    // Cool palette (listening / thinking)
-    const sphereCool = Color(0xFF00AACC);
-    const sphereCoolBright = Color(0xFF88EEFF);
-
-    final base = isCool ? sphereCool : sphereWarm;
-    final bright = isCool ? sphereCoolBright : sphereWarmBright;
-
-    // Rotation speed around the vertical Y-axis
-    final rotY = progress * 2 * pi * 0.35;
-
-    for (int i = 0; i < count; i++) {
-      // Random point on unit sphere using spherical coordinates
-      final theta = rng.nextDouble() * 2 * pi; // azimuthal (longitude)
-      final phi = acos(2 * rng.nextDouble() - 1); // polar (latitude)
-
-      // 3-D position before rotation
-      final x0 = radius * sin(phi) * cos(theta);
-      final y0 = radius * cos(phi); // vertical axis — stays vertical
-      final z0 = radius * sin(phi) * sin(theta);
-
-      // Rotate around Y axis by rotY
-      final x = cx + x0 * cos(rotY) + z0 * sin(rotY);
-      final y = cy + y0; // Y unchanged by Y-axis rotation
-      final z = -x0 * sin(rotY) + z0 * cos(rotY);
-
-      // Depth-based size & opacity (z in [-radius, +radius])
-      final depth = (z / radius + 1) / 2; // 0 = back, 1 = front
-      final dotSize = (dense ? 1.2 : 1.8) * (0.3 + depth * 0.9);
-      final opacity = (0.15 + depth * 0.85).clamp(0.0, 1.0);
-
-      final isBright = rng.nextDouble() > 0.85;
-      final color = (isBright ? bright : base).withValues(alpha: opacity);
-
-      canvas.drawCircle(Offset(x, y), dotSize, Paint()..color = color);
+    for (final ring in rings) {
+      final age = elapsed - ring.birthTime;
+      if (age > 0.7 || age < 0) continue;
+      final progress = age / 0.7;
+      final ringRadius = maxRadius * (1.0 + progress * 0.6);
+      final opacity = (1.0 - progress) * 0.4;
+      paint.color = color.withValues(alpha: opacity);
+      canvas.drawCircle(Offset(cx, cy), ringRadius, paint);
     }
   }
 
   @override
+  bool shouldRepaint(_PulseRingPainter old) =>
+      old.elapsed != elapsed || old.rings.length != rings.length;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Task 20 — Full SpherePainter (all enhancements)
+// ─────────────────────────────────────────────────────────────────────────────
+class _SpherePainter extends CustomPainter {
+  final double progress;
+  final _VoiceState state;
+  final List<_ParticleSeed> particles;
+  final bool dense;
+  final double amplitude;
+  final double elapsed;
+  final double breathScale;
+  final double stateBlend;
+  final double thinkingContraction;
+  final double beatStrength;
+  final double entryProgress;
+  final bool isExiting;
+  final double idleTiltX;
+  final Paint _paint = Paint()..style = PaintingStyle.fill;
+
+  _SpherePainter({
+    required this.progress,
+    required this.state,
+    required this.particles,
+    this.dense = false,
+    this.amplitude = 0.0,
+    this.elapsed = 0.0,
+    this.breathScale = 1.0,
+    this.stateBlend = 0.0,
+    this.thinkingContraction = 0.0,
+    this.beatStrength = 0.0,
+    this.entryProgress = 1.0,
+    this.isExiting = false,
+    this.idleTiltX = 0.0,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final cx = size.width / 2;
+    final cy = size.height / 2;
+    final baseRadius = (size.width / 2) * breathScale;
+    const warmBase = Color(0xFFC05621);
+    const warmBright = Color(0xFFFFCB8A);
+    const coolBase = Color(0xFF00AACC);
+    const coolBright = Color(0xFF88EEFF);
+    final base = Color.lerp(warmBase, coolBase, stateBlend)!;
+    final bright = Color.lerp(warmBright, coolBright, stateBlend)!;
+
+    final glowStrength = switch (state) {
+      _VoiceState.idle => 0.06,
+      _VoiceState.listening => 0.08 + amplitude * 0.05,
+      _VoiceState.thinking => 0.05,
+      _VoiceState.speaking => 0.08 + amplitude * 0.12,
+      _VoiceState.waiting => 0.07,
+    };
+    final glowColor = Color.lerp(
+      warmBase,
+      coolBase,
+      stateBlend,
+    )!.withValues(alpha: glowStrength);
+    final glowPaint = Paint()
+      ..shader = RadialGradient(colors: [glowColor, Colors.transparent])
+          .createShader(
+            Rect.fromCircle(center: Offset(cx, cy), radius: baseRadius * 0.65),
+          );
+    canvas.drawCircle(Offset(cx, cy), baseRadius * 0.65, glowPaint);
+
+    final rotSpeed = switch (state) {
+      _VoiceState.idle => 0.11,
+      _VoiceState.listening => 0.12,
+      _VoiceState.thinking => 0.08,
+      _VoiceState.speaking => 0.11,
+      _VoiceState.waiting => 0.10,
+    };
+    final rotY = elapsed * rotSpeed;
+
+    final turbStrength = switch (state) {
+      _VoiceState.idle => 0.35,
+      _VoiceState.listening => 0.45 + amplitude * 0.65,
+      _VoiceState.thinking => 0.30,
+      _VoiceState.speaking => 0.50 + amplitude * 0.70,
+      _VoiceState.waiting => 0.28,
+    };
+
+    final visibleCount = entryProgress >= 1.0
+        ? particles.length
+        : (particles.length * entryProgress).round();
+    final renderedParticles =
+        <({double z, double x, double y, double size, Color color})>[];
+
+    for (int i = 0; i < visibleCount; i++) {
+      final particle = particles[i];
+      final phi = particle.phi;
+      final theta = particle.theta;
+      double x0 = baseRadius * sin(phi) * cos(theta);
+      double y0 = baseRadius * cos(phi);
+      double z0 = baseRadius * sin(phi) * sin(theta);
+
+      final radiusOffset = _sineNoise(i, elapsed * 0.75) * turbStrength;
+      final radiusScale = ((baseRadius + radiusOffset) / max(baseRadius, 1))
+          .clamp(0.96, 1.04);
+      x0 *= radiusScale;
+      y0 *= radiusScale;
+      z0 *= radiusScale;
+
+      final normalLength = sqrt(
+        x0 * x0 + y0 * y0 + z0 * z0,
+      ).clamp(0.001, double.infinity);
+      final nx = x0 / normalLength;
+      final ny = y0 / normalLength;
+      final nz = z0 / normalLength;
+      final swarmWave =
+          (sin(elapsed * 0.95 + particle.hoverBand + phi * 1.2 - theta * 0.4) +
+              1) /
+          2;
+      final floatPulse = pow(
+        max(0.0, sin(elapsed * particle.hoverSpeed + particle.hoverPhase)),
+        1.10,
+      ).toDouble();
+      final stateLift = switch (state) {
+        _VoiceState.idle => baseRadius * (dense ? 0.062 : 0.100),
+        _VoiceState.listening =>
+          baseRadius * ((dense ? 0.065 : 0.104) + amplitude * 0.022),
+        _VoiceState.thinking => baseRadius * (dense ? 0.020 : 0.032),
+        _VoiceState.speaking =>
+          baseRadius * ((dense ? 0.058 : 0.092) + beatStrength * 0.020),
+        _VoiceState.waiting => baseRadius * (dense ? 0.070 : 0.115),
+      };
+      final liftDistance =
+          stateLift *
+          particle.hoverStrength *
+          floatPulse *
+          (0.35 + 0.65 * swarmWave);
+      final liftNormalized = stateLift <= 0
+          ? 0.0
+          : (liftDistance / stateLift).clamp(0.0, 1.0);
+      x0 += nx * liftDistance;
+      y0 += ny * liftDistance;
+      z0 += nz * liftDistance;
+
+      // Y-axis rotation
+      double rotatedX = x0 * cos(rotY) + z0 * sin(rotY);
+      double rotatedY = y0;
+      double rotatedZ = -x0 * sin(rotY) + z0 * cos(rotY);
+
+      if (state == _VoiceState.idle && idleTiltX > 0) {
+        final rotX = sin(idleTiltX * 2 * pi) * 0.14;
+        final tiltedY = rotatedY * cos(rotX) - rotatedZ * sin(rotX);
+        final tiltedZ = rotatedY * sin(rotX) + rotatedZ * cos(rotX);
+        rotatedY = tiltedY;
+        rotatedZ = tiltedZ;
+      }
+
+      final perspectiveStrength = dense ? 0.22 : 0.36;
+      final perspectiveScale =
+          (1.0 + (rotatedZ / max(baseRadius, 1)) * perspectiveStrength).clamp(
+            0.74,
+            1.48,
+          );
+      final depth = ((rotatedZ / max(baseRadius, 1)) + 1) / 2;
+      double drawX = cx + rotatedX * perspectiveScale;
+      double drawY = cy + rotatedY * perspectiveScale;
+
+      final amplitudeBoost = amplitude * 0.45;
+      double dotSize = dense
+          ? (1.0 + 0.45 * depth + amplitudeBoost * 0.15)
+          : (1.15 + 1.65 * depth + amplitudeBoost * depth);
+      dotSize += liftNormalized * (dense ? 0.42 : 0.90) * (0.60 + depth);
+
+      final beatBrightnessBoost = state == _VoiceState.speaking
+          ? beatStrength * 0.20
+          : 0.0;
+      final brightThreshold = switch (state) {
+        _VoiceState.speaking => 0.72 - beatBrightnessBoost,
+        _VoiceState.thinking => 0.80,
+        _ => 0.86,
+      }.clamp(0.55, 0.95);
+      final isBright = particle.brightBias > brightThreshold;
+
+      final flashBoost = (state == _VoiceState.speaking && amplitude > 0.8)
+          ? 0.25 * (amplitude - 0.8) / 0.2
+          : 0.0;
+
+      double opacity = (0.15 + depth * 0.85).clamp(0.0, 1.0);
+      if (state == _VoiceState.idle || state == _VoiceState.waiting) {
+        final twinkle = (sin(elapsed * 1.5 + particle.twinklePhase) + 1) / 2;
+        final twinkleBoost = twinkle > 0.80
+            ? (twinkle - 0.80) / 0.20 * 0.35
+            : 0.0;
+        opacity = (opacity + twinkleBoost).clamp(0.0, 1.0);
+      }
+      opacity = (opacity + liftNormalized * 0.34 * depth).clamp(0.0, 1.0);
+
+      final finalOpacity = (opacity + flashBoost).clamp(0.0, 1.0);
+
+      final dxToCenter = drawX - cx;
+      final dyToCenter = drawY - cy;
+      final distToCenter = sqrt(
+        dxToCenter * dxToCenter + dyToCenter * dyToCenter,
+      );
+      final maxSilhouetteRadius = baseRadius * (dense ? 1.03 : 1.05);
+      if (!isExiting && distToCenter > maxSilhouetteRadius) {
+        final clampScale = maxSilhouetteRadius / distToCenter;
+        drawX = cx + dxToCenter * clampScale;
+        drawY = cy + dyToCenter * clampScale;
+      }
+
+      if (isExiting) {
+        final scatterStrength = 35.0 * (1.0 - entryProgress);
+        final dx = drawX - cx;
+        final dy = drawY - cy;
+        final dist = sqrt(dx * dx + dy * dy).clamp(0.001, double.infinity);
+        drawX += (dx / dist) * scatterStrength;
+        drawY += (dy / dist) * scatterStrength;
+        final exitOpacity = (finalOpacity * entryProgress).clamp(0.0, 1.0);
+        _paint.color = (isBright ? bright : base).withValues(
+          alpha: exitOpacity,
+        );
+        canvas.drawCircle(Offset(drawX, drawY), dotSize, _paint);
+        continue;
+      }
+
+      final finalDotSize = state == _VoiceState.speaking && beatStrength > 0
+          ? dotSize * (1.0 + beatStrength * 0.4)
+          : dotSize;
+      renderedParticles.add((
+        z: rotatedZ + liftDistance,
+        x: drawX,
+        y: drawY,
+        size: finalDotSize,
+        color: (isBright ? bright : base).withValues(alpha: finalOpacity),
+      ));
+    }
+
+    renderedParticles.sort((a, b) => a.z.compareTo(b.z));
+    for (final particle in renderedParticles) {
+      _paint.color = particle.color;
+      canvas.drawCircle(Offset(particle.x, particle.y), particle.size, _paint);
+    }
+
+    if (state == _VoiceState.thinking && thinkingContraction > 0.05) {
+      _drawThinkingHalos(canvas, Offset(cx, cy), baseRadius);
+    }
+  }
+
+  void _drawThinkingHalos(Canvas canvas, Offset center, double radius) {
+    final haloR1 = radius * 0.85 * (1.0 - thinkingContraction * 0.15);
+    final haloR2 = radius * 1.05 * (1.0 - thinkingContraction * 0.10);
+    final op1 = (thinkingContraction * 0.25).clamp(0.0, 0.25);
+    final op2 = (thinkingContraction * 0.15).clamp(0.0, 0.15);
+
+    final haloPaint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.2
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2.5);
+
+    haloPaint.color = const Color(0xFF00AACC).withValues(alpha: op1);
+    canvas.drawArc(
+      Rect.fromCircle(center: center, radius: haloR1),
+      elapsed * 1.2,
+      5.76,
+      false,
+      haloPaint,
+    );
+
+    haloPaint.color = const Color(0xFF88EEFF).withValues(alpha: op2);
+    canvas.drawArc(
+      Rect.fromCircle(center: center, radius: haloR2),
+      -elapsed * 0.8,
+      5.76,
+      false,
+      haloPaint,
+    );
+  }
+
+  @override
   bool shouldRepaint(_SpherePainter old) =>
-      old.progress != progress || old.state != state;
+      old.progress != progress ||
+      old.state != state ||
+      old.particles != particles ||
+      old.amplitude != amplitude ||
+      old.elapsed != elapsed ||
+      old.breathScale != breathScale ||
+      old.stateBlend != stateBlend ||
+      old.thinkingContraction != thinkingContraction ||
+      old.beatStrength != beatStrength ||
+      old.entryProgress != entryProgress ||
+      old.isExiting != isExiting ||
+      old.idleTiltX != idleTiltX;
 }

@@ -40,6 +40,36 @@ class SupabaseService {
     return null;
   }
 
+  Future<List<Map<String, dynamic>>> getActiveTours() async {
+    try {
+      final rows = await _client
+          .from('guided_tours')
+          .select()
+          .eq('is_active', true)
+          .order('created_at');
+      return List<Map<String, dynamic>>.from(rows as List);
+    } catch (e, st) {
+      debugPrint('Supabase getActiveTours failed: $e');
+      debugPrintStack(stackTrace: st);
+      return const [];
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> getTourStops(String tourId) async {
+    try {
+      final rows = await _client
+          .from('tour_stops')
+          .select()
+          .eq('tour_id', tourId)
+          .order('stop_order');
+      return List<Map<String, dynamic>>.from(rows as List);
+    } catch (e, st) {
+      debugPrint('Supabase getTourStops failed: $e');
+      debugPrintStack(stackTrace: st);
+      return const [];
+    }
+  }
+
   List<String> _extractCandidates(String qrCode) {
     final normalized = qrCode.trim();
     if (normalized.isEmpty) return const [];

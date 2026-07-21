@@ -1,30 +1,50 @@
-// This is a basic Flutter widget test.
-//
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
-
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-
-import 'package:mtengatenga_ar/main.dart';
+import 'package:mtengatenga_ar/core/services/indoor_navigation_service.dart';
+import 'package:mtengatenga_ar/features/map/indoor_navigation_screen.dart';
 
 void main() {
-  testWidgets('Counter increments smoke test', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
-    await tester.pumpWidget(const MtengatengaApp());
+  testWidgets('indoor navigation renders and completes manual route', (
+    WidgetTester tester,
+  ) async {
+    final service = IndoorNavigationService();
 
-    // Verify that our counter starts at 0.
-    expect(find.text('0'), findsOneWidget);
-    expect(find.text('1'), findsNothing);
+    await tester.pumpWidget(
+      MaterialApp(home: IndoorNavigationScreen(navigationService: service)),
+    );
 
-    // Tap the '+' icon and trigger a frame.
-    await tester.tap(find.byIcon(Icons.add));
-    await tester.pump();
+    expect(find.text('Indoor Navigation'), findsOneWidget);
+    expect(find.text('Measured Room Map'), findsOneWidget);
+    expect(find.byType(CustomPaint), findsWidgets);
 
-    // Verify that our counter has incremented.
-    expect(find.text('0'), findsNothing);
-    expect(find.text('1'), findsOneWidget);
+    await tester.tap(find.text('Preview Route'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Full tour'), findsOneWidget);
+    expect(find.text('Start Navigation'), findsOneWidget);
+
+    await tester.tap(find.text('Start Navigation'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Artifact 1'), findsOneWidget);
+    expect(find.text('1 of 4 - 4.7 m from current stop'), findsOneWidget);
+
+    await tester.tap(find.text("I'm here"));
+    await tester.pumpAndSettle();
+    expect(find.text('Artifact 2'), findsOneWidget);
+
+    await tester.tap(find.text("I'm here"));
+    await tester.pumpAndSettle();
+    expect(find.text('Artifact 3'), findsOneWidget);
+
+    await tester.tap(find.text("I'm here"));
+    await tester.pumpAndSettle();
+    expect(find.text('Artifact 4'), findsOneWidget);
+
+    await tester.tap(find.text("I'm here"));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Tour complete'), findsOneWidget);
+    expect(find.text('4 artifacts visited - 17.1 m walked'), findsOneWidget);
   });
 }

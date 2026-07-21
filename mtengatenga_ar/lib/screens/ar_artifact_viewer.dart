@@ -23,12 +23,13 @@ class ArArtifactViewer extends StatefulWidget {
 
 class _ArArtifactViewerState extends State<ArArtifactViewer> {
   static const String _nodeName = 'artifact_ar_node';
-  static const double _minPlaneExtentMeters = 0.22;
-  static const double _minPlaneAreaMeters2 = 0.06;
-  static const int _requiredStableDetections = 8;
-  static const Duration _planeStaleTimeout = Duration(seconds: 2);
+  static const double _minPlaneExtentMeters = 0.12;
+  static const double _minPlaneAreaMeters2 = 0.015;
+  static const int _requiredStableDetections = 3;
+  static const Duration _planeStaleTimeout = Duration(seconds: 3);
   static const Duration _trackingPollInterval = Duration(milliseconds: 450);
-  static const double _minPlacementDistanceMeters = 0.20;
+  static const Duration _lockFallbackDelay = Duration(seconds: 8);
+  static const double _minPlacementDistanceMeters = 0.10;
   static const double _maxPlacementDistanceMeters = 3.00;
   static const String _trackingStateTracking = 'TRACKING';
   static const String _trackingStatePaused = 'PAUSED';
@@ -38,6 +39,8 @@ class _ArArtifactViewerState extends State<ArArtifactViewer> {
   ArCoreController? _controller;
   ArCoreReferenceNode? _placedNode;
   Timer? _trackingPollTimer;
+  Timer? _lockFallbackTimer;
+  bool _lockedByFallback = false;
 
   String? _preparedModelUri;
   String? _errorMessage;
@@ -63,6 +66,7 @@ class _ArArtifactViewerState extends State<ArArtifactViewer> {
   @override
   void dispose() {
     _stopTrackingPolling();
+    _lockFallbackTimer?.cancel();
     _controller?.dispose();
     super.dispose();
   }
@@ -178,15 +182,33 @@ class _ArArtifactViewerState extends State<ArArtifactViewer> {
                       borderRadius: BorderRadius.circular(AppRadius.md),
                       border: Border.all(color: AppColors.surfaceBorder),
                     ),
-                    child: Text(
-                      _isModelPlaced
-                          ? 'Model placed. Tap another plane area to reposition.'
-                          : _scanStatusText,
-                      style: const TextStyle(
-                        color: AppColors.textMuted,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w700,
-                      ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          _isModelPlaced
+                              ? 'Model placed. Use "Place anywhere" to reset.'
+                              : _scanStatusText,
+                          style: const TextStyle(
+                            color: AppColors.textMuted,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        ElevatedButton.icon(
+                          onPressed: _isPlacingModel ? null : _placeAnywhere,
+                          icon: const Icon(Icons.center_focus_strong),
+                          label: Text(
+                            _isModelPlaced ? 'Place again in front' : 'Place anywhere',
+                          ),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: AppColors.primary,
+                            foregroundColor: Colors.white,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ],
@@ -307,6 +329,21 @@ class _ArArtifactViewerState extends State<ArArtifactViewer> {
     controller.onError = _onArError;
     _resetSurfaceDetectionState(clearBestPlaneArea: true);
     _startTrackingPolling();
+    _startLockFallbackTimer();
+  }
+
+  void _startLockFallbackTimer() {
+    _lockFallbackTimer?.cancel();
+    _lockFallbackTimer = Timer(_lockFallbackDelay, () {
+      if (!mounted || _isModelPlaced) return;
+      if (_planeReadiness == PlaneReadiness.locked) return;
+      debugPrint('Lock fallback: forcing PlaneReadiness.locked after timeout.');
+      setState(() {
+        _planeReadiness = PlaneReadiness.locked;
+        _lockedByFallback = true;
+      });
+      _showMessage('Detection slow - tap any visible surface to place.');
+    });
   }
 
   Future<void> _onPlaneTap(List<ArCoreHitTestResult> hits) async {
@@ -316,13 +353,8 @@ class _ArArtifactViewerState extends State<ArArtifactViewer> {
       _showMessage('Keep scanning until surface locks.');
       return;
     }
-    if (_trackingState != _trackingStateTracking) {
-      debugPrint('Placement blocked: tracking state=$_trackingState');
-      _showMessage('Move phone slowly to regain tracking.');
-      return;
-    }
     if (hits.isEmpty) {
-      _showMessage('No plane detected yet. Move phone and try again.');
+      _showMessage('No plane detected at tap. Try a textured area.');
       return;
     }
 
@@ -366,7 +398,7 @@ class _ArArtifactViewerState extends State<ArArtifactViewer> {
         objectUrl: modelUri,
         position: hit.pose.translation.clone(),
         rotation: hit.pose.rotation.clone(),
-        scale: vector.Vector3.all(0.35),
+        scale: vector.Vector3.all(1.5),
       );
 
       _placedNode = node;
@@ -389,15 +421,66 @@ class _ArArtifactViewerState extends State<ArArtifactViewer> {
     }
   }
 
+  Future<void> _placeAnywhere() async {
+    if (_isPlacingModel) return;
+    final controller = _controller;
+    final modelUri = _preparedModelUri;
+    if (controller == null || modelUri == null) {
+      _showMessage('AR session not ready yet.');
+      return;
+    }
+
+    _lockFallbackTimer?.cancel();
+
+    if (!mounted) return;
+    setState(() => _isPlacingModel = true);
+
+    try {
+      if (_placedNode?.name != null) {
+        await controller.removeNode(nodeName: _placedNode!.name);
+      }
+    } catch (_) {}
+
+    try {
+      final node = ArCoreReferenceNode(
+        name: _nodeName,
+        objectUrl: modelUri,
+        position: vector.Vector3(0, -0.3, -0.8),
+        rotation: vector.Vector4(0, 0, 0, 1),
+        scale: vector.Vector3.all(1.5),
+      );
+
+      _placedNode = node;
+      await controller.addArCoreNode(node);
+
+      if (!mounted) return;
+      setState(() {
+        _isModelPlaced = true;
+        _planeReadiness = PlaneReadiness.locked;
+      });
+      _showMessage('Model placed in front of you.');
+    } catch (error, stackTrace) {
+      debugPrint('Place anywhere failed: $error');
+      debugPrintStack(stackTrace: stackTrace);
+      _showMessage('Could not place model.');
+    } finally {
+      if (mounted) {
+        setState(() => _isPlacingModel = false);
+      }
+    }
+  }
+
   void _onArError(String message) {
     debugPrint('ArCoreView error: $message');
     _stopTrackingPolling();
+    _lockFallbackTimer?.cancel();
     if (!mounted) return;
     setState(() {
       _errorMessage = message;
       _planeReadiness = PlaneReadiness.scanning;
       _stablePlaneDetections = 0;
       _hasShownLockedMessage = false;
+      _lockedByFallback = false;
     });
   }
 
@@ -436,17 +519,12 @@ class _ArArtifactViewerState extends State<ArArtifactViewer> {
         }
 
         _resetIfSurfaceIsStale();
-
-        if (nextTracking != _trackingStateTracking) {
-          _decreaseDetectionConfidence();
-        }
       } catch (_) {
         if (mounted && _trackingState != _trackingStatePaused) {
           debugPrint(
             'Tracking polling fallback: $_trackingState -> $_trackingStatePaused',
           );
           setState(() => _trackingState = _trackingStatePaused);
-          _decreaseDetectionConfidence();
         }
       } finally {
         _isTrackingPollInFlight = false;
@@ -558,10 +636,6 @@ class _ArArtifactViewerState extends State<ArArtifactViewer> {
   }
 
   String get _scanStatusText {
-    if (_trackingState != _trackingStateTracking) {
-      return 'Tracking limited. Move phone slowly over textured area.';
-    }
-
     switch (_planeReadiness) {
       case PlaneReadiness.scanning:
         return 'Scanning for a flat surface...';
@@ -569,6 +643,9 @@ class _ArArtifactViewerState extends State<ArArtifactViewer> {
         final pct = (_confidenceRatio * 100).toStringAsFixed(0);
         return 'Stabilizing surface... $pct%';
       case PlaneReadiness.locked:
+        if (_lockedByFallback) {
+          return 'Detection slow - tap any visible surface to place.';
+        }
         return 'Surface locked. Tap to place model.';
     }
   }

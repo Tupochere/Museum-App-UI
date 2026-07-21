@@ -35,6 +35,25 @@ flutter test test/path/to/test_file.dart
 dart run build_runner build --delete-conflicting-outputs
 ```
 
+### Cloud Functions Deploy
+
+Run from inside `cloud_functions/` (PowerShell):
+
+```powershell
+gcloud.cmd functions deploy aiProxy `
+  --gen2 `
+  --runtime=nodejs20 `
+  --region=us-central1 `
+  --trigger-http `
+  --allow-unauthenticated `
+  --entry-point=aiProxy `
+  --memory=512MB `
+  --timeout=120s `
+  --min-instances=1 `
+  --source=. `
+  --env-vars-file=env.yaml
+```
+
 ## Environment Setup
 
 Create `mtengatenga_ar/.env` with:
@@ -94,6 +113,17 @@ There are two AR-related viewers. The entry point is `lib/features/ar/ar_viewer_
 ### Theme
 
 Design tokens live in `lib/theme/app_tokens.dart` (`AppColors`, `AppSpacing`, `AppRadius`). Theme is configured in `lib/theme/app_theme.dart`. Custom font: Lexend (Regular/SemiBold/Bold).
+
+## Code Style
+
+When generating or modifying code, follow Object-Oriented principles as much as possible:
+- **Encapsulation** — keep state private; expose only what is needed via public interfaces
+- **Single Responsibility** — each class should have one clear purpose
+- **Abstraction** — depend on interfaces/abstract classes, not concrete implementations (repositories, services)
+- **Inheritance & Composition** — prefer composition over inheritance where appropriate
+- **Polymorphism** — use abstract base classes or interfaces to allow interchangeable implementations
+
+In practice: new logic belongs in a service or repository class, not inline in widgets. Widgets should delegate business logic to services via DI (`get_it`).
 
 ## Git Workflow
 

@@ -1,5 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:get_it/get_it.dart';
 import '../../core/domain/entities/artifact.model.dart';
+import '../../core/services/saved_artifacts_service.dart';
+import '../../core/services/ticket_gate.dart';
+import '../../features/ai_guide/ai_guide_screen.dart';
+import '../../services/translation_service.dart';
 import '../../theme/app_tokens.dart';
 
 class ArtifactDetailsScreen extends StatefulWidget {
@@ -16,24 +21,29 @@ class ArtifactDetailsScreen extends StatefulWidget {
 
 class _ArtifactDetailsScreenState extends State<ArtifactDetailsScreen> {
   int _tabIndex = 0;
+  final _savedService = GetIt.instance<SavedArtifactsService>();
 
   // From Stitch camera-view background-image :contentReference[oaicite:1]{index=1}
   static const _cameraBgUrl =
       'https://lh3.googleusercontent.com/aida-public/AB6AXuCz7m3hfZ7WDj7tuYMeFX6xHQPagTZzocE8zajP23BAGdJBaOEaXK5GSJpLNvAUTUFOSkh3jLrxhMhGWVe6-cr-BY1eA3hTTTsGX2LAs5J9bJYMoQ2_cTNa127AVJD5XS6kOyRsfS8vsJJEEnDUeAYRY7wmvF4A37vJUbUzNCXBEmZLEVVMlVGuuBya0PZgTZ62_kZwSRND--6asi1c75TSltkoTzbHLG2fQGmMGj3-2UuOEJw9CyrNfaoA9FeqjJj-Tx47tepZSjqG';
 
-  // 3D thumb background-image :contentReference[oaicite:2]{index=2}
-  static const _artifactThumbUrl =
-      'https://lh3.googleusercontent.com/aida-public/AB6AXuAKUlU05rK5MKuYlSuD-BV6n6QjIwPXAnNt0YxOA8FHBxpaG_2p4cOL-NTijM4YJsTDbVuyShtdG2e24WC9hRd9Tx7LO1_R5tCYxAZuazAl-IRXpNEfdjl4qA26t9iWYUyqQ8hTw1Zd37r-mW3yFHojYdSUjtUmW8exjZSAPXtsffU4TxJAiyFrxIud2vjA1vvuT_XgK2jcJ6c1Y5YJVLezGmP4TEHfkEYRdrvOtIe8oA4mzJ3zBNi1vBBZ1rKsXnYL9R9GPYpcten6';
-
   @override
   Widget build(BuildContext context) {
-    final artifactThumbUrl =
-        widget.artifact?.modelThumbnailUrl ??
-        widget.artifact?.displayImageUrl ??
-        _artifactThumbUrl;
-
     return Scaffold(
       backgroundColor: Colors.black,
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: () => TicketGate.navigate(
+          context,
+          () => AiGuideScreen(artifact: widget.artifact),
+        ),
+        backgroundColor: AppColors.primary,
+        foregroundColor: Colors.white,
+        icon: const Icon(Icons.auto_awesome, size: 18),
+        label: const Text(
+          'Ask AI Guide',
+          style: TextStyle(fontWeight: FontWeight.w700, fontSize: 14),
+        ),
+      ),
       body: Stack(
         children: [
           // AR camera background
@@ -121,27 +131,10 @@ class _ArtifactDetailsScreenState extends State<ArtifactDetailsScreen> {
                     ),
                     const SizedBox(height: 14),
 
-                    // Header content (chips + title + thumb)
+                    // Header content (chips + title)
                     Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 24),
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Expanded(
-                            child: _HeaderTextBlock(artifact: widget.artifact),
-                          ),
-                          const SizedBox(width: 14),
-                          _Thumb3D(
-                            imageUrl: artifactThumbUrl,
-                            onTap: () {
-                              // UI only
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(content: Text('Open 3D (UI only)')),
-                              );
-                            },
-                          ),
-                        ],
-                      ),
+                      child: _HeaderTextBlock(artifact: widget.artifact),
                     ),
 
                     const SizedBox(height: 16),
@@ -173,7 +166,20 @@ class _ArtifactDetailsScreenState extends State<ArtifactDetailsScreen> {
                             ),
                           ),
                           const SizedBox(width: 12),
-                          _SquareIconButton(icon: Icons.favorite, onTap: () {}),
+                          ValueListenableBuilder<Set<String>>(
+                            valueListenable: _savedService,
+                            builder: (context, savedIds, _) {
+                              final id = widget.artifact?.id;
+                              final isSaved = id != null && savedIds.contains(id);
+                              return _SquareIconButton(
+                                icon: isSaved ? Icons.favorite : Icons.favorite_border,
+                                active: isSaved,
+                                onTap: () {
+                                  if (id != null) _savedService.toggle(id);
+                                },
+                              );
+                            },
+                          ),
                           const SizedBox(width: 12),
                           _SquareIconButton(icon: Icons.share, onTap: () {}),
                         ],
@@ -300,29 +306,35 @@ class _HeaderTextBlock extends StatelessWidget {
       children: [
         Row(
           children: [
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              decoration: BoxDecoration(
-                color: const Color(0xFFE07A5F).withOpacity(0.10), // terracotta/10 :contentReference[oaicite:12]{index=12}
-                borderRadius: BorderRadius.circular(6),
-              ),
-              child: Text(
-                category,
-                style: TextStyle(
-                  color: Color(0xFFE07A5F),
-                  fontSize: 10,
-                  fontWeight: FontWeight.w900,
-                  letterSpacing: 1.2,
+            Flexible(
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFE07A5F).withOpacity(0.10), // terracotta/10 :contentReference[oaicite:12]{index=12}
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Text(
+                  category,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: Color(0xFFE07A5F),
+                    fontSize: 10,
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: 1.2,
+                  ),
                 ),
               ),
             ),
             const SizedBox(width: 10),
-            Text(
-              period,
-              style: TextStyle(
-                color: Color(0xFF78716C), // stone-500
-                fontSize: 12,
-                fontWeight: FontWeight.w700,
+            Flexible(
+              child: Text(
+                period,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: Color(0xFF78716C), // stone-500
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                ),
               ),
             ),
           ],
@@ -351,45 +363,15 @@ class _HeaderTextBlock extends StatelessWidget {
   }
 }
 
-class _Thumb3D extends StatelessWidget {
-  const _Thumb3D({required this.imageUrl, required this.onTap});
-  final String imageUrl;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(12),
-      child: Container(
-        width: 80,
-        height: 80,
-        decoration: BoxDecoration(
-          color: const Color(0xFFE7E5E4), // stone-200 :contentReference[oaicite:14]{index=14}
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: const Color(0xFFD6D3D1)), // stone-300
-        ),
-        clipBehavior: Clip.antiAlias,
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            Image.network(imageUrl, fit: BoxFit.cover),
-            Container(
-              color: Colors.black.withOpacity(0.10),
-              alignment: Alignment.center,
-              child: const Icon(Icons.threed_rotation, color: Colors.white, size: 30),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
 class _SquareIconButton extends StatelessWidget {
-  const _SquareIconButton({required this.icon, required this.onTap});
+  const _SquareIconButton({
+    required this.icon,
+    required this.onTap,
+    this.active = false,
+  });
   final IconData icon;
   final VoidCallback onTap;
+  final bool active;
 
   @override
   Widget build(BuildContext context) {
@@ -400,11 +382,18 @@ class _SquareIconButton extends StatelessWidget {
         width: 48,
         height: 48,
         decoration: BoxDecoration(
-          color: const Color(0xFFF5F5F4), // stone-100 :contentReference[oaicite:15]{index=15}
+          color: active
+              ? const Color(0xFFE07A5F).withAlpha(25)
+              : const Color(0xFFF5F5F4),
           borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: const Color(0xFFE7E5E4)), // stone-200
+          border: Border.all(
+            color: active ? const Color(0xFFE07A5F) : const Color(0xFFE7E5E4),
+          ),
         ),
-        child: Icon(icon, color: const Color(0xFF57534E)), // stone-600
+        child: Icon(
+          icon,
+          color: active ? const Color(0xFFE07A5F) : const Color(0xFF57534E),
+        ),
       ),
     );
   }
@@ -484,24 +473,78 @@ class _TabContent extends StatelessWidget {
   }
 }
 
-class _OverviewTab extends StatelessWidget {
+class _OverviewTab extends StatefulWidget {
   const _OverviewTab({this.artifact});
 
   final Artifact? artifact;
 
   @override
-  Widget build(BuildContext context) {
-    final description = artifact?.description ?? 'No description is available for this artifact yet.';
-    final significance = artifact?.culturalSignificance ??
-        'Cultural significance details are not available yet for this artifact.';
-    final notes = artifact?.additionalNotes ?? 'Additional notes are not available.';
+  State<_OverviewTab> createState() => _OverviewTabState();
+}
 
+class _OverviewTabState extends State<_OverviewTab> {
+  final _languageState = GetIt.instance<LanguageState>();
+  final _translationService = GetIt.instance<TranslationService>();
+
+  late String _description;
+  late String _significance;
+  late String _notes;
+
+  @override
+  void initState() {
+    super.initState();
+    _resetToEnglish();
+    _languageState.addListener(_onLanguageChanged);
+    if (!_languageState.isEnglish) _translateAll();
+  }
+
+  @override
+  void dispose() {
+    _languageState.removeListener(_onLanguageChanged);
+    super.dispose();
+  }
+
+  void _resetToEnglish() {
+    _description = widget.artifact?.description ?? 'No description is available for this artifact yet.';
+    _significance = widget.artifact?.culturalSignificance ??
+        'Cultural significance details are not available yet for this artifact.';
+    _notes = widget.artifact?.additionalNotes ?? 'Additional notes are not available.';
+  }
+
+  void _onLanguageChanged() {
+    if (_languageState.isEnglish) {
+      setState(_resetToEnglish);
+    } else {
+      _translateAll();
+    }
+  }
+
+  Future<void> _translateAll() async {
+    final origDescription = widget.artifact?.description ?? 'No description is available for this artifact yet.';
+    final origSignificance = widget.artifact?.culturalSignificance ??
+        'Cultural significance details are not available yet for this artifact.';
+    final origNotes = widget.artifact?.additionalNotes ?? 'Additional notes are not available.';
+    final results = await Future.wait([
+      _translationService.translate(origDescription),
+      _translationService.translate(origSignificance),
+      _translationService.translate(origNotes),
+    ]);
+    if (!mounted) return;
+    setState(() {
+      _description = results[0];
+      _significance = results[1];
+      _notes = results[2];
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const SizedBox(height: 10),
         Text(
-          description,
+          _description,
           style: const TextStyle(
             color: AppColors.textMain,
             fontSize: 18,
@@ -520,7 +563,7 @@ class _OverviewTab extends StatelessWidget {
         ),
         const SizedBox(height: 10),
         Text(
-          significance,
+          _significance,
           style: const TextStyle(
             color: AppColors.textMain,
             fontSize: 16,
@@ -529,10 +572,10 @@ class _OverviewTab extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 14),
-        _InfoBox(artifact: artifact),
+        _InfoBox(artifact: widget.artifact),
         const SizedBox(height: 18),
         Text(
-          notes,
+          _notes,
           style: const TextStyle(
             color: AppColors.textMain,
             fontSize: 16,
@@ -585,14 +628,61 @@ class _InfoBox extends StatelessWidget {
   }
 }
 
-class _HistoryTab extends StatelessWidget {
+class _HistoryTab extends StatefulWidget {
   const _HistoryTab({this.artifact});
 
   final Artifact? artifact;
 
   @override
+  State<_HistoryTab> createState() => _HistoryTabState();
+}
+
+class _HistoryTabState extends State<_HistoryTab> {
+  final _languageState = GetIt.instance<LanguageState>();
+  final _translationService = GetIt.instance<TranslationService>();
+
+  List<String> _translatedEvents = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _resetToEnglish();
+    _languageState.addListener(_onLanguageChanged);
+    if (!_languageState.isEnglish) _translateAll();
+  }
+
+  @override
+  void dispose() {
+    _languageState.removeListener(_onLanguageChanged);
+    super.dispose();
+  }
+
+  void _resetToEnglish() {
+    final timeline = widget.artifact?.timeline ?? const <TimelineEvent>[];
+    _translatedEvents = timeline.map((e) => e.event).toList();
+  }
+
+  void _onLanguageChanged() {
+    if (_languageState.isEnglish) {
+      setState(_resetToEnglish);
+    } else {
+      _translateAll();
+    }
+  }
+
+  Future<void> _translateAll() async {
+    final timeline = widget.artifact?.timeline ?? const <TimelineEvent>[];
+    if (timeline.isEmpty) return;
+    final results = await Future.wait(
+      timeline.map((e) => _translationService.translate(e.event)),
+    );
+    if (!mounted) return;
+    setState(() => _translatedEvents = results);
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final timeline = artifact?.timeline ?? const <TimelineEvent>[];
+    final timeline = widget.artifact?.timeline ?? const <TimelineEvent>[];
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -602,7 +692,11 @@ class _HistoryTab extends StatelessWidget {
         const SizedBox(height: 10),
         if (timeline.isEmpty)
           const _TimelineItem(year: 'N/A', text: 'No timeline information available for this artifact.'),
-        for (final event in timeline) _TimelineItem(year: event.year, text: event.event),
+        for (int i = 0; i < timeline.length; i++)
+          _TimelineItem(
+            year: timeline[i].year,
+            text: i < _translatedEvents.length ? _translatedEvents[i] : timeline[i].event,
+          ),
         const SizedBox(height: 24),
       ],
     );

@@ -1,11 +1,14 @@
 import 'package:flutter/material.dart';
+import 'package:get_it/get_it.dart';
+import '../../core/services/ticket_gate.dart';
+import '../../services/translation_service.dart';
 import '../../theme/app_tokens.dart';
 import '../ai_guide/ai_guide_screen.dart';
-import 'debug_artifacts_screen.dart';
 import '../events/events_screen.dart';
 import '../map/indoor_navigation_screen.dart';
 import '../scan/scan_screen.dart';
 import '../tickets/tickets_donation_screen.dart';
+import '../search/search_screen.dart';
 
 class MtengatengaHomeScreen extends StatefulWidget {
   const MtengatengaHomeScreen({super.key});
@@ -15,7 +18,7 @@ class MtengatengaHomeScreen extends StatefulWidget {
 }
 
 class _MtengatengaHomeScreenState extends State<MtengatengaHomeScreen> {
-  bool _isEnglish = true;
+  final _languageState = GetIt.instance<LanguageState>();
 
   @override
   Widget build(BuildContext context) {
@@ -28,9 +31,14 @@ class _MtengatengaHomeScreenState extends State<MtengatengaHomeScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _Header(
-                isEnglish: _isEnglish,
-                onToggle: () => setState(() => _isEnglish = !_isEnglish),
+              ValueListenableBuilder<String>(
+                valueListenable: _languageState,
+                builder: (context, lang, _) => _Header(
+                  isEnglish: lang == 'en',
+                  onToggle: () {
+                    _languageState.setLanguage(lang == 'en' ? 'ny' : 'en');
+                  },
+                ),
               ),
               const SizedBox(height: 18),
               Text(
@@ -42,13 +50,39 @@ class _MtengatengaHomeScreenState extends State<MtengatengaHomeScreen> {
                 "Explore Malawi's\nHidden Heritage",
                 style: AppText.heroTitle.copyWith(color: AppColors.textMain),
               ),
-              const SizedBox(height: 22),
-              _ScanCard(
+              const SizedBox(height: 16),
+              InkWell(
                 onTap: () {
                   Navigator.of(context).push(
-                    MaterialPageRoute(builder: (_) => const ScanScreen()),
+                    MaterialPageRoute(builder: (_) => const SearchScreen()),
                   );
                 },
+                borderRadius: BorderRadius.circular(AppRadius.md),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                  decoration: BoxDecoration(
+                    color: AppColors.surfaceCard,
+                    borderRadius: BorderRadius.circular(AppRadius.md),
+                    border: Border.all(color: AppColors.surfaceBorder),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.search, color: AppColors.textMuted, size: 20),
+                      const SizedBox(width: 12),
+                      Text(
+                        'Search artifacts...',
+                        style: AppText.tileSubtitle.copyWith(color: AppColors.textMuted),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 22),
+              _ScanCard(
+                onTap: () => TicketGate.navigate(
+                  context,
+                  () => const ScanScreen(),
+                ),
               ),
               const SizedBox(height: 22),
               GridView.count(
@@ -73,11 +107,10 @@ class _MtengatengaHomeScreenState extends State<MtengatengaHomeScreen> {
                     icon: Icons.smart_toy_outlined,
                     title: 'AI Guide',
                     subtitle: 'Ask questions',
-                    onTap: () {
-                      Navigator.of(context).push(
-                        MaterialPageRoute(builder: (_) => const AiGuideScreen()),
-                      );
-                    },
+                    onTap: () => TicketGate.navigate(
+                      context,
+                      () => const AiGuideScreen(),
+                    ),
                   ),
                   _ActionTile(
                     icon: Icons.confirmation_number_outlined,
@@ -100,20 +133,6 @@ class _MtengatengaHomeScreenState extends State<MtengatengaHomeScreen> {
                     },
                   ),
                 ],
-              ),
-              const SizedBox(height: 18),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: () {
-                    Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (_) => const DebugArtifactsScreen(),
-                      ),
-                    );
-                  },
-                  child: const Text('Test Supabase Connection'),
-                ),
               ),
             ],
           ),
@@ -176,8 +195,8 @@ class _Header extends StatelessWidget {
             ),
             child: Row(
               children: [
-                _LangChip(active: isEnglish, label: 'EN'),
-                _LangChip(active: !isEnglish, label: 'NY'),
+                _LangChip(active: isEnglish, label: 'EN', flag: '\u{1F1EC}\u{1F1E7}'),
+                _LangChip(active: !isEnglish, label: 'NY', flag: '\u{1F1F2}\u{1F1FC}'),
               ],
             ),
           ),
@@ -188,26 +207,34 @@ class _Header extends StatelessWidget {
 }
 
 class _LangChip extends StatelessWidget {
-  const _LangChip({required this.active, required this.label});
+  const _LangChip({required this.active, required this.label, required this.flag});
 
   final bool active;
   final String label;
+  final String flag;
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
         color: active ? AppColors.secondary : Colors.transparent,
         borderRadius: BorderRadius.circular(999),
       ),
-      child: Text(
-        label,
-        style: TextStyle(
-          fontSize: 12,
-          fontWeight: FontWeight.w900,
-          color: active ? Colors.white : AppColors.textMuted,
-        ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(flag, style: const TextStyle(fontSize: 14)),
+          const SizedBox(width: 4),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w900,
+              color: active ? Colors.white : AppColors.textMuted,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -250,7 +277,7 @@ class _ScanCard extends StatelessWidget {
             ),
             const SizedBox(height: 6),
             Text(
-              'Point camera to discover history',
+              'Scan QR or identify objects',
               style: AppText.cardSubtitle.copyWith(color: Colors.white.withOpacity(0.90)),
               textAlign: TextAlign.center,
             ),

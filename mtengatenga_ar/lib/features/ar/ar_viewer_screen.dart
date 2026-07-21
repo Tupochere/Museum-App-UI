@@ -7,12 +7,14 @@ import 'package:vector_math/vector_math_64.dart' as vector;
 import '../../core/domain/entities/artifact.model.dart';
 import '../../core/services/ar_service.dart';
 import '../../core/services/model_manager_service.dart';
+import '../../core/services/plane_detection_service.dart';
 import '../../theme/app_tokens.dart';
 import '../artifact/artifact_details_screen.dart';
 
 enum ArViewerState {
   initializing,
   detectingSurfaces,
+  instantPlacementOffered,
   modelLoading,
   modelPlaced,
   arNotSupported,
@@ -44,10 +46,12 @@ class _ArViewerScreenState extends State<ArViewerScreen>
 
   final ArService _arService = ArService();
   final ModelManagerService _modelManagerService = ModelManagerService();
+  final PlaneDetectionService _planeDetection = PlaneDetectionService();
 
   ArCoreController? _arController;
   ArCoreReferenceNode? _currentNode;
   Timer? _nodeRefreshTimer;
+  Timer? _trackingPollTimer;
 
   ArViewerState _viewerState = ArViewerState.initializing;
   String? _errorMessage;
@@ -85,6 +89,7 @@ class _ArViewerScreenState extends State<ArViewerScreen>
   @override
   void dispose() {
     _nodeRefreshTimer?.cancel();
+    _trackingPollTimer?.cancel();
     _arService.disposeSession();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
@@ -232,7 +237,7 @@ class _ArViewerScreenState extends State<ArViewerScreen>
               onArCoreViewCreated: _onArCoreViewCreated,
               enableTapRecognizer: true,
               enablePlaneRenderer: true,
-              enableUpdateListener: false,
+              enableUpdateListener: true,
               debug: false,
             ),
           ),
@@ -363,6 +368,40 @@ class _ArViewerScreenState extends State<ArViewerScreen>
               fontWeight: FontWeight.w700,
             ),
           ),
+          // Phase 2: Confidence progress bar during surface detection.
+          if (_viewerState == ArViewerState.detectingSurfaces ||
+              _viewerState == ArViewerState.instantPlacementOffered) ...[
+            const SizedBox(height: 8),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(4),
+              child: LinearProgressIndicator(
+                value: _planeDetection.confidenceRatio,
+                backgroundColor: AppColors.surfaceBorder,
+                valueColor: AlwaysStoppedAnimation<Color>(
+                  _planeDetection.readiness == PlaneReadiness.ready
+                      ? const Color(0xFF2E7D32)
+                      : AppColors.primary,
+                ),
+                minHeight: 6,
+              ),
+            ),
+          ],
+          // Phase 3: Instant placement button.
+          if (_viewerState == ArViewerState.instantPlacementOffered) ...[
+            const SizedBox(height: 10),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                onPressed: _performInstantPlacement,
+                icon: const Icon(Icons.touch_app),
+                label: const Text('Place Model Freely'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.primary,
+                  foregroundColor: Colors.white,
+                ),
+              ),
+            ),
+          ],
           const SizedBox(height: 6),
           Text(
             _modelSourceText(),
@@ -615,9 +654,9 @@ class _ArViewerScreenState extends State<ArViewerScreen>
       case ArViewerState.initializing:
         return 'Starting AR session...';
       case ArViewerState.detectingSurfaces:
-        return _hasHorizontalSurface
-            ? 'Tap surface to place model'
-            : 'Move camera slowly, then tap on a flat surface';
+        return _planeDetection.guidanceMessage;
+      case ArViewerState.instantPlacementOffered:
+        return _planeDetection.guidanceMessage;
       case ArViewerState.modelLoading:
         return _loadingProgressText();
       case ArViewerState.modelPlaced:
@@ -632,10 +671,10 @@ class _ArViewerScreenState extends State<ArViewerScreen>
   }
 
   String get _surfaceStatusText {
-    if (!_hasHorizontalSurface) {
-      return 'No surface confirmed yet. White dots mean tracking is working. Point at a flat, textured area and tap to test placement.';
+    if (_viewerState == ArViewerState.modelPlaced) {
+      return 'Surface detected. Model anchored.';
     }
-    return 'Surface detected. Tap where you want to place the model.';
+    return _planeDetection.surfaceHintMessage;
   }
 
   void _onArCoreViewCreated(ArCoreController controller) {
@@ -643,6 +682,10 @@ class _ArViewerScreenState extends State<ArViewerScreen>
     _arService.initializeSession(controller);
     controller.onError = _handleArError;
     controller.onPlaneTap = _handlePlaneTap;
+    controller.onPlaneDetected = _handlePlaneDetected;
+
+    _planeDetection.reset();
+    _startTrackingPoll();
 
     if (!mounted) return;
     setState(() => _viewerState = ArViewerState.detectingSurfaces);
@@ -652,7 +695,29 @@ class _ArViewerScreenState extends State<ArViewerScreen>
     if (_modelUrl == null) return;
     if (_viewerState == ArViewerState.modelLoading) return;
     if (hits.isEmpty) {
-      _showNoSurfaceHint();
+      _showThrottledHint('No surface yet. Move slowly and tap a flat area.');
+      return;
+    }
+
+    // Phase 3: in instant-placement mode, accept any hit without validation.
+    if (_viewerState == ArViewerState.instantPlacementOffered) {
+      final hit = hits.first;
+      _placementPosition = hit.pose.translation.clone();
+      _placementRotation = hit.pose.rotation.clone();
+      await _placeModelAtCurrentPose(showLoadingState: true);
+      return;
+    }
+
+    // Phase 1: distance filtering.
+    final validHits = _planeDetection.filterHits(hits);
+    if (validHits.isEmpty) {
+      _showThrottledHint('Move slightly closer or farther from the surface.');
+      return;
+    }
+
+    // Phase 2: soft readiness gate — block only when scanning (0 detections).
+    if (_planeDetection.readiness == PlaneReadiness.scanning) {
+      _showThrottledHint('No surface detected yet. Keep scanning...');
       return;
     }
 
@@ -660,14 +725,14 @@ class _ArViewerScreenState extends State<ArViewerScreen>
       setState(() => _hasHorizontalSurface = true);
     }
 
-    final hit = hits.first;
+    final hit = validHits.first;
     _placementPosition = hit.pose.translation.clone();
     _placementRotation = hit.pose.rotation.clone();
 
     await _placeModelAtCurrentPose(showLoadingState: true);
   }
 
-  void _showNoSurfaceHint() {
+  void _showThrottledHint(String message) {
     final now = DateTime.now();
     if (now.difference(_lastNoSurfaceHintAt) < const Duration(seconds: 2)) {
       return;
@@ -676,11 +741,108 @@ class _ArViewerScreenState extends State<ArViewerScreen>
     final messenger = ScaffoldMessenger.maybeOf(context);
     messenger?.hideCurrentSnackBar();
     messenger?.showSnackBar(
-      const SnackBar(
-        content: Text('No surface yet. Move slowly and tap a flat area.'),
-        duration: Duration(seconds: 2),
+      SnackBar(
+        content: Text(message),
+        duration: const Duration(seconds: 2),
       ),
     );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Phase 2: Real-time plane detection + tracking poll
+  // ---------------------------------------------------------------------------
+
+  void _handlePlaneDetected(ArCorePlane plane) {
+    // Ignore detections once model is already placed.
+    if (_viewerState == ArViewerState.modelPlaced ||
+        _viewerState == ArViewerState.modelLoading) {
+      return;
+    }
+
+    final accepted = _planeDetection.evaluatePlane(plane);
+    if (!accepted) return;
+
+    // If a plane arrives while in instant-placement mode, return to normal.
+    if (_viewerState == ArViewerState.instantPlacementOffered &&
+        _planeDetection.readiness != PlaneReadiness.scanning) {
+      if (mounted) setState(() => _viewerState = ArViewerState.detectingSurfaces);
+      return;
+    }
+
+    if (mounted) setState(() {});
+  }
+
+  void _startTrackingPoll() {
+    _trackingPollTimer?.cancel();
+    _trackingPollTimer = Timer.periodic(
+      const Duration(milliseconds: 500),
+      (_) async {
+        if (!mounted) return;
+        final state = await _arService.pollTrackingState();
+        _planeDetection.onTrackingStateUpdate(state);
+        _planeDetection.tick();
+
+        // Phase 3: offer instant placement after timeout.
+        if (_planeDetection.shouldOfferInstantPlacement &&
+            _viewerState == ArViewerState.detectingSurfaces) {
+          setState(
+            () => _viewerState = ArViewerState.instantPlacementOffered,
+          );
+          return;
+        }
+
+        if (mounted) setState(() {});
+      },
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Phase 3: Instant (non-anchored) placement
+  // ---------------------------------------------------------------------------
+
+  Future<void> _performInstantPlacement() async {
+    final controller = _arController;
+    final modelUrl = _modelUrl;
+    if (controller == null || modelUrl == null) return;
+
+    if (mounted) {
+      setState(() => _viewerState = ArViewerState.modelLoading);
+    }
+
+    try {
+      if (_currentNode?.name != null) {
+        await controller.removeNode(nodeName: _currentNode!.name);
+      }
+    } catch (_) {}
+
+    try {
+      // Place at a fixed position in front of the camera.
+      final position = vector.Vector3(0, -0.5,
+          -PlaneDetectionService.instantPlacementDistance);
+      final rotation = vector.Vector4(0, 0, 0, 1); // identity quaternion
+
+      final node = ArCoreReferenceNode(
+        name: _modelNodeName,
+        objectUrl: modelUrl,
+        position: position,
+        rotation: rotation,
+        scale: vector.Vector3.all(_modelScale),
+      );
+
+      _currentNode = node;
+      _placementPosition = position;
+      _placementRotation = rotation;
+      // Non-anchored placement — model may float but always works.
+      await controller.addArCoreNode(node);
+
+      if (!mounted) return;
+      setState(() {
+        _viewerState = ArViewerState.modelPlaced;
+        _errorMessage = null;
+      });
+    } catch (error) {
+      _setError(_friendlyArError(error.toString()));
+    }
   }
 
   Future<void> _placeModelAtCurrentPose({
@@ -833,6 +995,8 @@ class _ArViewerScreenState extends State<ArViewerScreen>
         // Reset should continue even when remove call fails.
       }
     }
+
+    _planeDetection.reset();
 
     if (!mounted) return;
     setState(() {

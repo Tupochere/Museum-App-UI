@@ -1,4 +1,3 @@
-// ignore_for_file: duplicate_import
 // ignore: unused_import, unused_shown_name, unnecessary_import
 import 'package:brick_core/query.dart';
 // ignore: unused_import, unused_shown_name, unnecessary_import
