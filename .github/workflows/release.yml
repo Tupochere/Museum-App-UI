@@ -46,6 +46,13 @@ jobs:
         run: |
           echo "SUPABASE_URL=${{ secrets.SUPABASE_URL }}" > .env
           echo "SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }}" >> .env
+          # PayChangu: the app reads PAYCHANGU_SECRET_KEY from this bundled .env
+          # (payment_service.dart -> Authorization: Bearer <key>). Without it the
+          # header is "Bearer " and PayChangu returns 403 "secret key missing".
+          # NOTE: shipping a payment secret inside the APK is a stopgap — it is
+          # extractable from the .env asset. Proxy it server-side (see aiProxy).
+          echo "PAYCHANGU_SECRET_KEY=${{ secrets.PAYCHANGU_SECRET_KEY }}" >> .env
+          echo "PAYCHANGU_TEST_MODE=${{ secrets.PAYCHANGU_TEST_MODE }}" >> .env
 
       # Restore the release keystore (base64-encoded) and its credentials.
       - name: Restore keystore
