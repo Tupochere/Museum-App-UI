@@ -8,8 +8,10 @@ All Flutter app code lives in `mtengatenga_ar/`. Everything else at the repo roo
 
 - `AI_HANDOFF.md` — primary orientation doc; read this first for context
 - `docs/` — architecture and progress notes
-- `GIT_BRANCH_WORKFLOW.md` — branch/PR workflow rules
 - `WIRELESS_DEVICE_SETUP.md` — Android wireless debugging setup
+
+Branch/PR and release rules live in [Git Workflow](#git-workflow) and
+[Release Pipeline](#release-pipeline-apk) below.
 
 ## Common Commands
 
@@ -56,13 +58,25 @@ gcloud.cmd functions deploy aiProxy `
 
 ## Environment Setup
 
-Create `mtengatenga_ar/.env` with:
+Create `mtengatenga_ar/.env` (git-ignored) with at least:
 ```
 SUPABASE_URL=...
 SUPABASE_ANON_KEY=...
+PAYCHANGU_SECRET_KEY=...     # PayChangu API secret (use a sec-test-... key in test mode)
+PAYCHANGU_TEST_MODE=true
 ```
+See `mtengatenga_ar/.env.example` for the full list of supported keys (AI/TTS
+providers, Cloud Function proxy URL, etc.).
 
-The `.env` file is loaded as a Flutter asset at startup (`flutter_dotenv`).
+The `.env` file is loaded as a Flutter asset at startup (`flutter_dotenv`) and is
+read throughout the app via `dotenv.env['KEY']`.
+
+> **CI note:** `.env` is git-ignored, so the release pipeline **recreates it from
+> GitHub Actions secrets** at build time (see [Release Pipeline](#release-pipeline-apk)).
+> Any new env var the app depends on must be added in **three** places or it will
+> be empty in released builds: (1) `.env.example`, (2) a GitHub Actions repository
+> secret, and (3) the `Create .env` step in `.github/workflows/release.yml`.
+> Forgetting (3) is exactly what caused the PayChangu "403 secret key missing" bug.
 
 ## Architecture
 
@@ -127,11 +141,67 @@ In practice: new logic belongs in a service or repository class, not inline in w
 
 ## Git Workflow
 
-- `main` — production only, no direct commits
+- `main` — production; releases are cut from here by pushing a version tag
 - `dev` — integration branch, merge target for features
 - `feature/<name>` — one branch per task
 
 PRs go `feature/<name>` → `dev`, then `dev` → `main` for releases. Use rebase (`git rebase dev`) to sync feature branches, then `git push --force-with-lease`.
+
+## Release Pipeline (APK)
+
+The app is distributed as a signed Android APK via **GitHub Releases**, built by
+`.github/workflows/release.yml` (repo: `Tupochere/Museum-App-UI`).
+
+**Trigger:** pushing a tag matching `v*` builds *and publishes* a Release.
+`workflow_dispatch` (manual run) builds and uploads an APK artifact **without**
+publishing a Release — use it to validate a build.
+
+```bash
+# Cut a release (tags the given commit; that commit's tree is what ships):
+git tag v1.0.9 <commit-sha>
+git push origin v1.0.9
+```
+
+**What the workflow does, in order:** checkout the tagged commit → set up Java 17
++ Flutter **3.38.3** (pinned; newer Flutter breaks the legacy `arcore_flutter_plugin`)
+→ **Create `.env` from secrets** → restore keystore & sign → `flutter pub get` →
+`build_runner` → patch the legacy ARCore plugin (namespace + Kotlin null-safety)
+→ `flutter build apk --release` → stage two APK copies → publish the Release.
+
+**Required GitHub Actions repository secrets:**
+`SUPABASE_URL`, `SUPABASE_ANON_KEY`, `PAYCHANGU_SECRET_KEY`, `PAYCHANGU_TEST_MODE`,
+`KEYSTORE_BASE64`, `KEYSTORE_STORE_PASSWORD`, `KEYSTORE_KEY_PASSWORD`, `KEYSTORE_KEY_ALIAS`.
+
+**Critical rules:**
+- **The tag builds the commit it points to** — not "main now". Make sure your fix
+  is on that commit before tagging.
+- **Set/update any needed secret _before_ pushing the tag.** Secrets are read at
+  build time; a missing secret becomes an empty string in the bundled `.env`.
+- The build produces two assets: a versioned `mtengatenga-ar-<tag>.apk` and a
+  stable `mtengatenga-ar.apk`. The stable name powers the permanent "latest" URL:
+  `https://github.com/Tupochere/Museum-App-UI/releases/latest/download/mtengatenga-ar.apk`
+- **The signing keystore (`KEYSTORE_BASE64`) is irreplaceable.** Android refuses to
+  *update* an installed app with an APK signed by a different key. Lose it and
+  existing users can only move forward by uninstalling (losing local data).
+- **Sideloaded APKs do not auto-update** like Play Store apps. Already-installed
+  users keep their version until they re-download or an in-app updater prompts them.
+
+## Secrets & What Not to Commit
+
+- **Never commit secrets.** `.env`, `cloud_functions/env.yaml`, and keystores are
+  git-ignored and injected at deploy/build time from GitHub secrets / GCP Secret
+  Manager. Rotate any key that leaks.
+- **Secret keys do not belong in the mobile app.** A key placed in `.env` ships
+  inside the APK asset and is extractable by anyone. `PAYCHANGU_SECRET_KEY` is
+  currently bundled this way as a **test-mode stopgap**; a live key must instead be
+  proxied server-side (mirror the existing `aiProxy` Cloud Function, which holds the
+  AI keys server-side).
+- **Never commit generated/installed artifacts:** `node_modules/`, `build/`,
+  `.dart_tool/`, or Claude Code worktree copies under `.claude/worktrees/`. These
+  are large, platform-specific, and regenerable (`npm ci`, `flutter pub get`).
+- Remember: **`.gitignore` does not untrack files already tracked.** To stop
+  tracking something already committed, use `git rm -r --cached <path>` (keeps it on
+  disk), add it to `.gitignore`, then commit.
 
 ## Generated Code
 
