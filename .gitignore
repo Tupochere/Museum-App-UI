@@ -1,2 +1,11 @@
 # MCP config may contain access tokens - do not commit
 .mcp.json
+
+# Local teaching workspace (/teach skill) - not part of the app
+teach/
+
+# Orphaned Claude Code worktree copies - never belong in the repo
+.claude/worktrees/
+
+# Node deps for cloud functions - regenerate with `npm ci`, never commit
+cloud_functions/node_modules/
