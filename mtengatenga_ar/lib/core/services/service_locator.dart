@@ -27,6 +27,16 @@ class ServiceLocator {
   static Future<void> setup() async {
     if (_getIt.isRegistered<SupabaseService>()) return;
 
+    // Registered first, deliberately. Everything below this point awaits the
+    // network (Supabase, Brick, FCM), and main.dart caps this whole method at
+    // 20 seconds — so a slow connection abandons setup part-way and silently
+    // skips every registration that had not run yet. These two are lazy (no
+    // I/O until first use) and depend on nothing above, so putting them at the
+    // front keeps the self-updater working on exactly the slow connections
+    // where users most need it.
+    _getIt.registerLazySingleton<UpdateService>(UpdateService.new);
+    _getIt.registerLazySingleton<AppUpdateInstaller>(AppUpdateInstaller.new);
+
     final supabaseService = SupabaseService();
     await supabaseService.initialize();
     _getIt.registerSingleton<SupabaseService>(supabaseService);
@@ -59,8 +69,6 @@ class ServiceLocator {
       () => TranslationService(languageState),
     );
     _getIt.registerLazySingleton<SearchService>(SearchService.new);
-    _getIt.registerLazySingleton<UpdateService>(UpdateService.new);
-    _getIt.registerLazySingleton<AppUpdateInstaller>(AppUpdateInstaller.new);
 
     // Notification badge (load saved last-read timestamp)
     final badgeService = NotificationBadgeService();
