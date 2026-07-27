@@ -5,6 +5,7 @@ import '../data/repositories/artifact_repository_brick.dart';
 import '../data/repositories/room_repository_brick.dart';
 import '../domain/repositories/artifact_repository.dart';
 import '../domain/repositories/room_repository.dart';
+import 'app_update_installer.dart';
 import 'auth_service.dart';
 import 'auth_state.dart';
 import 'indoor_navigation_service.dart';
@@ -59,6 +60,7 @@ class ServiceLocator {
     );
     _getIt.registerLazySingleton<SearchService>(SearchService.new);
     _getIt.registerLazySingleton<UpdateService>(UpdateService.new);
+    _getIt.registerLazySingleton<AppUpdateInstaller>(AppUpdateInstaller.new);
 
     // Notification badge (load saved last-read timestamp)
     final badgeService = NotificationBadgeService();

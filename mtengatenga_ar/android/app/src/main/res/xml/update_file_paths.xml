@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Exposes the downloaded release APK to the system package installer.
+     Must stay in sync with AppUpdateInstaller's cache folder: Dart's
+     getTemporaryDirectory() maps to Context.getCacheDir() on Android. -->
+<paths>
+    <cache-path
+        name="app_updates"
+        path="app_updates/" />
+</paths>
