@@ -1,16 +1,25 @@
 package com.example.mtengatenga_ar
 
 import android.content.Context
+import android.content.Intent
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import android.net.Uri
+import android.os.Build
+import android.provider.Settings
+import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
+import io.flutter.plugin.common.MethodCall
+import io.flutter.plugin.common.MethodChannel
+import java.io.File
 
 class MainActivity : FlutterActivity() {
     private val tiltChannelName = "mtengatenga_ar/device_tilt"
+    private val installerChannelName = "mtengatenga_ar/app_installer"
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -19,6 +28,96 @@ class MainActivity : FlutterActivity() {
             flutterEngine.dartExecutor.binaryMessenger,
             tiltChannelName
         ).setStreamHandler(DeviceTiltStreamHandler(this))
+
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            installerChannelName
+        ).setMethodCallHandler(AppInstallerHandler(this))
+    }
+}
+
+/**
+ * Bridges the in-app updater to Android's package installer.
+ *
+ * A non-privileged app can never install silently: [installApk] only *launches*
+ * the system installer, which always asks the user to confirm. The app's release
+ * APKs are signed with the same keystore, so the OS treats them as an update
+ * rather than demanding an uninstall.
+ */
+class AppInstallerHandler(
+    private val context: Context
+) : MethodChannel.MethodCallHandler {
+
+    override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
+        when (call.method) {
+            "canInstall" -> result.success(canInstall())
+            "openInstallSettings" -> result.success(openInstallSettings())
+            "installApk" -> installApk(call.argument<String>("path"), result)
+            else -> result.notImplemented()
+        }
+    }
+
+    /**
+     * True when the app may request package installs. Below API 26 there is no
+     * per-app grant — the device-wide "unknown sources" toggle governs it — so
+     * report true and let the installer surface any refusal itself.
+     */
+    private fun canInstall(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return true
+        return context.packageManager.canRequestPackageInstalls()
+    }
+
+    /** Deep-links to this app's "Install unknown apps" screen. */
+    private fun openInstallSettings(): Boolean {
+        return try {
+            val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                Intent(
+                    Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                    Uri.parse("package:${context.packageName}")
+                )
+            } else {
+                Intent(Settings.ACTION_SECURITY_SETTINGS)
+            }
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(intent)
+            true
+        } catch (error: Exception) {
+            false
+        }
+    }
+
+    private fun installApk(path: String?, result: MethodChannel.Result) {
+        if (path.isNullOrBlank()) {
+            result.error("INVALID_PATH", "APK path is empty.", null)
+            return
+        }
+
+        val apk = File(path)
+        if (!apk.exists() || apk.length() <= 0L) {
+            result.error("MISSING_APK", "APK file was not found at $path.", null)
+            return
+        }
+
+        try {
+            val uri = FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.updateprovider",
+                apk
+            )
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+            result.success(true)
+        } catch (error: Exception) {
+            result.error(
+                "INSTALL_FAILED",
+                error.message ?: "Could not open the package installer.",
+                null
+            )
+        }
     }
 }
 

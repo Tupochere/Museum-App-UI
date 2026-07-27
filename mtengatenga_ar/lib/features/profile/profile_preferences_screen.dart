@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:get_it/get_it.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import '../../core/services/auth_service.dart';
 import '../../core/services/auth_state.dart';
 import '../../services/translation_service.dart';
@@ -179,18 +180,37 @@ class ProfilePreferencesScreen extends StatelessWidget {
           // App version
           const Padding(
             padding: EdgeInsets.only(top: 8, bottom: 24),
-            child: Text(
-              'Mtengatenga AR Museum v1.0.0',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w600,
-                color: AppColors.textMuted,
-              ),
-            ),
+            child: _AppVersionLabel(),
           ),
         ],
       ),
+    );
+  }
+}
+
+/// Shows the running build's version, read from the platform package metadata
+/// rather than hard-coded, so it can never drift from what is installed.
+class _AppVersionLabel extends StatelessWidget {
+  const _AppVersionLabel();
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<PackageInfo>(
+      future: PackageInfo.fromPlatform(),
+      builder: (context, snapshot) {
+        final version = snapshot.data?.version;
+        return Text(
+          version == null
+              ? 'Mtengatenga AR Museum'
+              : 'Mtengatenga AR Museum v$version',
+          textAlign: TextAlign.center,
+          style: const TextStyle(
+            fontSize: 11,
+            fontWeight: FontWeight.w600,
+            color: AppColors.textMuted,
+          ),
+        );
+      },
     );
   }
 }
